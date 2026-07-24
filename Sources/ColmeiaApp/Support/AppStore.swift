@@ -4,6 +4,7 @@ import os
 import ColmeiaKit
 
 struct UndoEntry {
+    let id = ULID.generate()
     let undoOps: [OpPayload]
     let redoOps: [OpPayload]
 }
@@ -264,11 +265,40 @@ final class AppStore: ObservableObject {
     /// Vários payloads em UM `doc.apply` — o engine aplica em ordem na mesma request,
     /// evitando corrida entre Tasks (ex.: substituir conexão = delete + add).
     func performMany(_ payloads: [OpPayload], undoable: Bool = true) {
-        guard let ws = workspace, !payloads.isEmpty else { return }
+        guard workspace != nil, !payloads.isEmpty else { return }
+        let staged = stageOptimistic(payloads, undoable: undoable)
+        Task {
+            do {
+                try await propose(staged)
+            } catch {
+                self.report(error, "doc.apply \(payloads.map(\.tipo.rawValue).joined(separator: ","))")
+            }
+        }
+    }
+
+    /// Como `performMany`, mas AGUARDA a response do engine e rethrowa a rejeição —
+    /// para fluxos que dependem da op EXISTIR no engine antes do próximo passo
+    /// (ex.: node.add → session.start, §7.1/§9.1). Rejeição desfaz o otimista.
+    func performManyAguardando(_ payloads: [OpPayload], undoable: Bool = true) async throws {
+        guard workspace != nil, !payloads.isEmpty else { return }
+        let staged = stageOptimistic(payloads, undoable: undoable)
+        try await propose(staged)
+    }
+
+    private struct StagedApply {
+        let ops: [DocOp]
+        /// Inversas (na ordem de desfazer) para reverter a aplicação otimista.
+        let rollback: [OpPayload]
+        let undoEntryID: ULID?
+    }
+
+    /// Aplica otimista no espelho local, registra undo e devolve o necessário
+    /// para propor ao engine e reverter se ele rejeitar.
+    private func stageOptimistic(_ payloads: [OpPayload], undoable: Bool) -> StagedApply {
         var ops: [DocOp] = []
         var inverses: [OpPayload] = []
         for payload in payloads {
-            if undoable, let inverse = inverse(of: payload) {
+            if let inverse = inverse(of: payload) {
                 inverses.append(inverse)
             }
             let op = DocOp(opID: ULID.generate(), author: .humanoLocal, ts: Date(), payload: payload)
@@ -276,16 +306,30 @@ final class AppStore: ObservableObject {
             apply(payload)
             ops.append(op)
         }
+        var undoEntryID: ULID?
         if undoable, !inverses.isEmpty {
-            undoStack.append(UndoEntry(undoOps: inverses.reversed(), redoOps: payloads))
+            let entry = UndoEntry(undoOps: inverses.reversed(), redoOps: payloads)
+            undoStack.append(entry)
             redoStack.removeAll()
+            undoEntryID = entry.id
         }
-        Task {
-            do {
-                _ = try await connection.call(.docApply, params: DocApplyParams(workspaceID: ws.id, ops: ops))
-            } catch {
-                self.report(error, "doc.apply \(payloads.map(\.tipo.rawValue).joined(separator: ","))")
+        return StagedApply(ops: ops, rollback: inverses.reversed(), undoEntryID: undoEntryID)
+    }
+
+    /// Proposta + reconciliação: rejeição do engine desfaz a aplicação otimista —
+    /// sem isso, um `node.add` rejeitado viraria nó-fantasma só-local (raiz do
+    /// toast "session.start: node_not_found").
+    private func propose(_ staged: StagedApply) async throws {
+        guard let ws = workspace else { return }
+        do {
+            _ = try await connection.call(.docApply, params: DocApplyParams(workspaceID: ws.id, ops: staged.ops))
+        } catch {
+            for op in staged.ops { pendingOpIDs.remove(op.opID) }
+            for payload in staged.rollback { apply(payload) }
+            if let undoEntryID = staged.undoEntryID {
+                undoStack.removeAll { $0.id == undoEntryID }
             }
+            throw error
         }
     }
 
@@ -546,36 +590,56 @@ final class AppStore: ObservableObject {
         perform(.nodeDelete(NodeDeleteOpPayload(id: id)))
     }
 
+    /// Nó + sessão. O `session.start` SÓ dispara depois de o `doc.apply` do node.add
+    /// ser CONFIRMADO pelo engine (§7.1/§9.1) — nunca um start órfão com node_id que
+    /// o engine não conhece. Com `renomearSeDuplicado` (quick-start), colisão de nome
+    /// (`duplicate_node_name`, §5.2.1) re-gera o próximo livre consultando a verdade
+    /// do engine e tenta de novo, com limite; erro remanescente vira toast.
     func addTerminal(
         nome: String,
         papel: String?,
         adapter: String,
         comandoOverride: String?,
         cwd: String,
-        monitorarAtividade: Bool
+        monitorarAtividade: Bool,
+        renomearSeDuplicado: Bool = false
     ) async {
         guard let ws = workspace else { return }
         let tamanho = Tamanho(w: 640, h: 420)
-        let node = TerminalNode(
-            id: ULID.generate(),
-            posicao: centerPosition(for: tamanho),
-            tamanho: tamanho,
-            z: nextZ(),
-            criadoEm: Date(),
-            nome: nome,
-            papel: papel?.isEmpty == true ? nil : papel,
-            adapter: adapter,
-            comandoOverride: comandoOverride?.isEmpty == true ? nil : comandoOverride,
-            cwd: cwd,
-            monitorarAtividade: monitorarAtividade
-        )
-        perform(.nodeAdd(NodeAddOpPayload(node: .terminal(node))))
-        selection = node.id
-        let controller = terminalController(for: node.id)
-        do {
-            try await controller.start(workspaceID: ws.id)
-        } catch {
-            report(error, "session.start")
+        var nomeAtual = nome
+        let maxTentativas = 5
+        for tentativa in 0...maxTentativas {
+            let node = TerminalNode(
+                id: ULID.generate(),
+                posicao: centerPosition(for: tamanho),
+                tamanho: tamanho,
+                z: nextZ(),
+                criadoEm: Date(),
+                nome: nomeAtual,
+                papel: papel?.isEmpty == true ? nil : papel,
+                adapter: adapter,
+                comandoOverride: comandoOverride?.isEmpty == true ? nil : comandoOverride,
+                cwd: cwd,
+                monitorarAtividade: monitorarAtividade
+            )
+            do {
+                try await performManyAguardando([.nodeAdd(NodeAddOpPayload(node: .terminal(node)))])
+            } catch let error as ProtocolError where error.known == .duplicate_node_name
+                && renomearSeDuplicado && tentativa < maxTentativas {
+                nomeAtual = await nomeLivreNoEngine(base: Self.baseNome(adapter: adapter), workspaceID: ws.id)
+                continue
+            } catch {
+                report(error, "node.add \"\(nomeAtual)\"")
+                return
+            }
+            selection = node.id
+            let controller = terminalController(for: node.id)
+            do {
+                try await controller.start(workspaceID: ws.id)
+            } catch {
+                report(error, "session.start")
+            }
+            return
         }
     }
 
@@ -588,28 +652,55 @@ final class AppStore: ObservableObject {
             adapter: adapter,
             comandoOverride: nil,
             cwd: ws.caminhoRaiz ?? FileManager.default.homeDirectoryForCurrentUser.path,
-            monitorarAtividade: true
+            monitorarAtividade: true,
+            renomearSeDuplicado: true
         )
     }
 
-    /// "claude-1", "shell-2"… único no workspace, case-insensitive (§5.2.1).
+    /// "claude-1", "shell-2"… único no workspace, case-insensitive (§5.2.1),
+    /// contra o espelho local (nós de TODOS os andares — como o engine enxerga).
     func nomeAutomatico(adapter: String) -> String {
-        let base: String
+        Self.nomeLivre(base: Self.baseNome(adapter: adapter), usados: nomesTerminaisLocais())
+    }
+
+    static func baseNome(adapter: String) -> String {
         switch KnownAdapter(rawValue: adapter) {
-        case .claudeCode: base = "claude"
-        case .codex: base = "codex"
-        case .geminiCli: base = "gemini"
-        case .opencode: base = "opencode"
-        case .shell: base = "shell"
-        case .none: base = adapter.lowercased()
+        case .claudeCode: return "claude"
+        case .codex: return "codex"
+        case .geminiCli: return "gemini"
+        case .opencode: return "opencode"
+        case .shell: return "shell"
+        case .none: return adapter.lowercased()
         }
-        let usados = Set(nodes.values.compactMap { node -> String? in
+    }
+
+    static func nomeLivre(base: String, usados: Set<String>) -> String {
+        var n = 1
+        while usados.contains("\(base)-\(n)".lowercased()) { n += 1 }
+        return "\(base)-\(n)"
+    }
+
+    private func nomesTerminaisLocais() -> Set<String> {
+        Set(nodes.values.compactMap { node -> String? in
             if case .terminal(let t) = node { return t.nome.lowercased() }
             return nil
         })
-        var n = 1
-        while usados.contains("\(base)-\(n)") { n += 1 }
-        return "\(base)-\(n)"
+    }
+
+    /// Nome livre contra a VERDADE do engine (doc.snapshot) unida ao espelho local —
+    /// se o espelho estiver defasado, quem manda é o engine (§5.2.1).
+    private func nomeLivreNoEngine(base: String, workspaceID: ULID) async -> String {
+        var usados = nomesTerminaisLocais()
+        if let result = try? await connection.call(
+            .docSnapshot,
+            params: DocSnapshotParams(workspaceID: workspaceID),
+            expecting: DocSnapshotResult.self
+        ) {
+            for node in result.documentSnapshot.nodes {
+                if case .terminal(let t) = node { usados.insert(t.nome.lowercased()) }
+            }
+        }
+        return Self.nomeLivre(base: base, usados: usados)
     }
 
     func addNota() {

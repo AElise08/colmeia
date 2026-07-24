@@ -28,6 +28,8 @@ public final class Engine: @unchecked Sendable {
     let startedAt = Date()
     /// Diretório injetado no PATH das sessões — a CLI `colmeia` mora ao lado do engine (§10.2).
     let cliDirectory: String
+    /// Env base herdada pelos PTYs (§10.2), saneada em `handleSessionStart` — injetável em testes.
+    var baseEnvironment: [String: String] = ProcessInfo.processInfo.environment
 
     // Estado (só na stateQueue)
     var workspaces: [ULID: WorkspaceState] = [:]
@@ -453,14 +455,18 @@ public final class Engine: @unchecked Sendable {
                 guard params.cols > 0, params.rows > 0 else {
                     throw ProtocolError(name: .invalid_params, message: "geometria inválida")
                 }
-                live.cols = params.cols
-                live.rows = params.rows
-                if let pty = live.pty {
-                    PTY.resize(master: pty.master, pid: pty.pid, cols: params.cols, rows: params.rows)
+                // Resize idêntico é no-op: sem SIGWINCH (TUIs redesenham a tela inteira)
+                // e sem evento redundante no journal.
+                if live.cols != params.cols || live.rows != params.rows {
+                    live.cols = params.cols
+                    live.rows = params.rows
+                    if let pty = live.pty {
+                        PTY.resize(master: pty.master, pid: pty.pid, cols: params.cols, rows: params.rows)
+                    }
+                    live.journal.append(
+                        .resize(ResizeEventPayload(cols: params.cols, rows: params.rows)),
+                        author: client.author)
                 }
-                live.journal.append(
-                    .resize(ResizeEventPayload(cols: params.cols, rows: params.rows)),
-                    author: client.author)
                 respondEncodable(client, id: request.id, EmptyResult())
             case .sessionKill:
                 let params = try request.decodeParams(SessionKillParams.self)
@@ -732,8 +738,16 @@ public final class Engine: @unchecked Sendable {
             throw ProtocolError(name: .adapter_launch_failed, message: "binário de \(node.adapter) não encontrado (§22.2)")
         }
 
+        // §9.1 — geometria inicial do cliente; sem cliente informando, default do engine.
+        let cols = params.cols ?? 120
+        let rows = params.rows ?? 32
+        guard cols > 0, rows > 0, cols <= 4096, rows <= 4096 else {
+            throw ProtocolError(name: .invalid_params, message: "geometria inicial inválida")
+        }
+
         let sessionID = ULID.generate()
-        var env = ProcessInfo.processInfo.environment
+        // §10.2 — env herdada saneada (nunca vazar marcadores de sessão do Claude Code).
+        var env = SessionEnv.inherited(from: baseEnvironment)
         for (key, value) in plan.envExtra { env[key] = value }
         env[ColmeiaEnv.socket] = paths.engineSocket.path
         env[ColmeiaEnv.sessionID] = sessionID.string
@@ -750,10 +764,13 @@ public final class Engine: @unchecked Sendable {
         }
 
         let journal = try SessionJournal(url: paths.sessionJournal(workspace: params.workspaceID, session: sessionID))
+        // §8.2/§9.1 — geometria inicial GRAVADA como primeiro evento: o replay configura
+        // o emulador antes do primeiro feed e reconstrói a mesma tela do vivo.
+        journal.append(.resize(ResizeEventPayload(cols: cols, rows: rows)), author: .sistema)
         let live = LiveSession(
             id: sessionID, workspaceID: params.workspaceID, nodeID: node.id, nodeNome: node.nome,
             adapterID: node.adapter, monitorar: node.monitorarAtividade, journal: journal,
-            cols: 120, rows: 32)
+            cols: cols, rows: rows)
         do {
             live.pty = try PTY.spawn(
                 executable: executable, args: args, environment: env, cwd: cwd,

@@ -278,15 +278,22 @@ public struct DocHistoryResult: Codable, Equatable, Sendable {
 public struct SessionStartParams: Codable, Equatable, Sendable {
     public var workspaceID: ULID
     public var nodeID: ULID
+    /// §9.1 — geometria inicial do cliente: o PTY já nasce no tamanho certo (o agente
+    /// não redesenha a tela num resize logo após o launch). Ausente → default do engine.
+    public var cols: Int?
+    public var rows: Int?
 
     enum CodingKeys: String, CodingKey {
+        case cols, rows
         case workspaceID = "workspace_id"
         case nodeID = "node_id"
     }
 
-    public init(workspaceID: ULID, nodeID: ULID) {
+    public init(workspaceID: ULID, nodeID: ULID, cols: Int? = nil, rows: Int? = nil) {
         self.workspaceID = workspaceID
         self.nodeID = nodeID
+        self.cols = cols
+        self.rows = rows
     }
 }
 

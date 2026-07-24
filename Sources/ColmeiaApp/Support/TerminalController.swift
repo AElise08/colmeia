@@ -27,6 +27,12 @@ final class TerminalController: NSObject, ObservableObject {
     private var pendingResize: (cols: Int, rows: Int)?
     /// Encadeia `session.input` para teclas não chegarem fora de ordem ao PTY.
     private var inputChain: Task<Void, Never>?
+    /// Um attach ativo por sessão (§8.4) — chamadas concorrentes aguardam o mesmo.
+    private var attachTask: Task<Void, Never>?
+    /// Output vivo que chega ENQUANTO o replay está em voo é adiado e emendado
+    /// depois, em ordem de seq — nunca alimentado antes do replay (§8.4).
+    private var replayEmVoo = false
+    private var vivoAdiado: [SessionOutputTopicPayload] = []
 
     init(nodeID: ULID, connection: EngineConnection) {
         self.nodeID = nodeID
@@ -57,22 +63,51 @@ final class TerminalController: NSObject, ObservableObject {
     }
 
     func start(workspaceID: ULID) async throws {
+        // §9.1 — geometria inicial do cliente no session.start: o agente já nasce no
+        // tamanho certo, sem redesenho por resize logo após o launch.
+        let terminal = terminalView.getTerminal()
+        let cols = terminal.cols
+        let rows = terminal.rows
         let result = try await connection.call(
             .sessionStart,
-            params: SessionStartParams(workspaceID: workspaceID, nodeID: nodeID),
+            params: SessionStartParams(workspaceID: workspaceID, nodeID: nodeID, cols: cols, rows: rows),
             expecting: SessionResult.self
         )
         lastSeq = 0
         adopt(session: result.session)
         await attach()
-        pushCurrentGeometry()
+        // Só empurra geometria se a view mudou desde o start (o engine deduplica
+        // resizes idênticos de qualquer forma).
+        let atual = terminalView.getTerminal()
+        if result.session.cols != atual.cols || result.session.rows != atual.rows {
+            pushCurrentGeometry()
+        }
     }
 
-    /// Replay desde `lastSeq + 1` emendado no vivo (§8.4); idempotente por `seq`.
+    /// Replay desde `lastSeq + 1` emendado no vivo (§8.4); idempotente por `seq` e
+    /// single-flight: um segundo attach concorrente aguarda o que já está em voo.
     func attach() async {
+        if let emVoo = attachTask {
+            await emVoo.value
+            return
+        }
+        let task = Task { await performAttach() }
+        attachTask = task
+        await task.value
+        attachTask = nil
+    }
+
+    private func performAttach() async {
         guard let sessionID = session?.id else { return }
+        replayEmVoo = true
+        vivoAdiado.removeAll()
         connection.registerOutputHandler(session: sessionID) { [weak self] payload in
-            self?.ingest(seq: payload.seq, dataB64: payload.dataB64)
+            guard let self else { return }
+            if self.replayEmVoo {
+                self.vivoAdiado.append(payload) // emenda exata: vivo só DEPOIS do replay
+            } else {
+                self.ingest(seq: payload.seq, dataB64: payload.dataB64)
+            }
         }
         do {
             let result = try await connection.call(
@@ -85,23 +120,29 @@ final class TerminalController: NSObject, ObservableObject {
         } catch {
             // Sessão pode ter morrido entre list e attach; o estado chega por session.state.
         }
+        replayEmVoo = false
+        for payload in vivoAdiado.sorted(by: { $0.seq < $1.seq }) {
+            ingest(seq: payload.seq, dataB64: payload.dataB64)
+        }
+        vivoAdiado.removeAll()
     }
 
-    /// Replay em UM feed: journals grandes não podem virar milhares de passadas
-    /// (decode + regex + feed) no main actor durante o launch (§21.1).
+    /// Replay reproduzindo a geometria do journal (§8.2): cada `resize` é aplicado ao
+    /// emulador na ordem; o output ENTRE resizes vai num feed só (journals grandes não
+    /// podem virar milhares de passadas no main actor durante o launch, §21.1).
     private func feedReplay(_ events: [Event]) {
-        var dados = Data()
-        for event in events {
-            guard event.seq > lastSeq else { continue }
-            lastSeq = event.seq
-            if case .output(let payload) = event.payload,
-               let data = Data(base64Encoded: payload.dataB64) {
-                dados.append(data)
+        var ultimoOutput = Data()
+        for acao in TerminalReplay.plan(events: events, lastSeq: &lastSeq) {
+            switch acao {
+            case .resize(let cols, let rows):
+                terminalView.resize(cols: cols, rows: rows)
+            case .feed(let data):
+                terminalView.feed(byteArray: [UInt8](data)[...])
+                ultimoOutput = data
             }
         }
-        guard !dados.isEmpty else { return }
-        terminalView.feed(byteArray: [UInt8](dados)[...])
-        refreshUltimaLinha(Data(dados.suffix(4096)))
+        guard !ultimoOutput.isEmpty else { return }
+        refreshUltimaLinha(Data(ultimoOutput.suffix(4096)))
     }
 
     func detach() {

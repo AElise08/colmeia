@@ -326,6 +326,35 @@ struct ClaudeCodeAdapterTests {
     }
 }
 
+// MARK: - Env das sessões (§10.2)
+
+@Suite("Env herdada do PTY")
+struct SessionEnvTests {
+    @Test func removeApenasMarcadoresDeSessaoDoClaudeCode() {
+        // remove: CLAUDE_CODE_* e CLAUDECODE*
+        #expect(SessionEnv.isClaudeCodeSessionMarker("CLAUDE_CODE_CHILD_SESSION"))
+        #expect(SessionEnv.isClaudeCodeSessionMarker("CLAUDE_CODE_ENTRYPOINT"))
+        #expect(SessionEnv.isClaudeCodeSessionMarker("CLAUDE_CODE_SSE_PORT"))
+        #expect(SessionEnv.isClaudeCodeSessionMarker("CLAUDECODE"))
+        #expect(SessionEnv.isClaudeCodeSessionMarker("CLAUDECODE_EXTRA"))
+        // conservador: NÃO remove ANTHROPIC_* nem parecidos
+        #expect(!SessionEnv.isClaudeCodeSessionMarker("ANTHROPIC_API_KEY"))
+        #expect(!SessionEnv.isClaudeCodeSessionMarker("ANTHROPIC_MODEL"))
+        #expect(!SessionEnv.isClaudeCodeSessionMarker("CLAUDE_CONFIG_DIR"))
+        #expect(!SessionEnv.isClaudeCodeSessionMarker("PATH"))
+        #expect(!SessionEnv.isClaudeCodeSessionMarker("COLMEIA_SESSION_ID"))
+
+        let base = [
+            "PATH": "/usr/bin",
+            "CLAUDE_CODE_CHILD_SESSION": "1",
+            "CLAUDECODE": "1",
+            "ANTHROPIC_API_KEY": "sk-x",
+        ]
+        let limpa = SessionEnv.inherited(from: base)
+        #expect(limpa == ["PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-x"])
+    }
+}
+
 // MARK: - Protocolo ponta a ponta pelo socket (§25.1, §25.9.4)
 
 /// Adapter fake da suíte (25.3.1): registrado sem nenhuma mudança no engine.
@@ -615,6 +644,125 @@ struct EngineSocketTests {
         let docURL = ColmeiaPaths(root: root).documentFile(wsID)
         let texto = try String(contentsOf: docURL, encoding: .utf8)
         #expect(texto.contains(#""tipo":"portal""#))
+        client.close()
+    }
+
+    /// §9.1 — session.start com a geometria do cliente: o PTY nasce no tamanho certo,
+    /// o journal grava a geometria inicial como PRIMEIRO evento (replay reproduz a
+    /// tela, §8.2) e resize idêntico não gera evento nem SIGWINCH redundante.
+    @Test func sessionStartUsaGeometriaDoClienteEJournalGravaResizeInicial() async throws {
+        let (engine, client, _) = try boot()
+        defer { engine.stop() }
+        _ = try await client.hello(client: "test")
+        let created = try await client.call(
+            .workspaceCreate, params: WorkspaceCreateParams(nome: "geo"), expecting: WorkspaceResult.self)
+        let wsID = created.workspace.id
+        let node = makeTerminalNode(nome: "Geo", override: "sleep 2")
+        _ = try await client.call(
+            .docApply,
+            params: DocApplyParams(workspaceID: wsID, ops: [proposal(.nodeAdd(NodeAddOpPayload(node: .terminal(node))))]))
+
+        // geometria inválida → invalid_params (mesma regra do session.resize)
+        do {
+            _ = try await client.call(
+                .sessionStart, params: SessionStartParams(workspaceID: wsID, nodeID: node.id, cols: 0, rows: 24))
+            Issue.record("cols=0 deveria falhar")
+        } catch let error as ProtocolError {
+            #expect(error.known == .invalid_params)
+        }
+
+        let started = try await client.call(
+            .sessionStart, params: SessionStartParams(workspaceID: wsID, nodeID: node.id, cols: 91, rows: 23),
+            expecting: SessionResult.self)
+        #expect(started.session.cols == 91)
+        #expect(started.session.rows == 23)
+
+        // resize idêntico → no-op; resize diferente → evento novo
+        _ = try await client.call(
+            .sessionResize, params: SessionResizeParams(sessionID: started.session.id, cols: 91, rows: 23))
+        _ = try await client.call(
+            .sessionResize, params: SessionResizeParams(sessionID: started.session.id, cols: 100, rows: 40))
+        _ = try await client.call(
+            .sessionKill, params: SessionKillParams(sessionID: started.session.id, sinal: .kill))
+        for _ in 0..<50 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            let list = try await client.call(
+                .sessionList, params: SessionListParams(workspaceID: wsID), expecting: [Session].self)
+            if let session = list.first(where: { $0.id == started.session.id }), !session.estado.isViva { break }
+        }
+
+        let replay = try await client.call(
+            .sessionReplay, params: SessionReplayParams(sessionID: started.session.id),
+            expecting: SessionReplayResult.self)
+        // primeiro evento do journal = geometria inicial (§9.1)
+        guard case .resize(let inicial)? = replay.events.first?.payload else {
+            Issue.record("primeiro evento deveria ser resize inicial; veio \(String(describing: replay.events.first))")
+            return
+        }
+        #expect(replay.events.first?.seq == 1)
+        #expect(inicial == ResizeEventPayload(cols: 91, rows: 23))
+        let resizes = replay.events.compactMap { event -> ResizeEventPayload? in
+            if case .resize(let payload) = event.payload { return payload }
+            return nil
+        }
+        // exatamente [inicial, 100x40] — o resize idêntico foi deduplicado
+        #expect(resizes == [ResizeEventPayload(cols: 91, rows: 23), ResizeEventPayload(cols: 100, rows: 40)])
+        client.close()
+    }
+
+    /// §10.2 — o spawn do PTY (caminho engine-agnóstico, vale para todos os adapters)
+    /// NÃO herda marcadores de sessão do Claude Code (CLAUDE_CODE_*/CLAUDECODE*), mas
+    /// mantém o resto da env e injeta COLMEIA_*.
+    @Test func envDoPTYNaoHerdaMarcadoresDeSessaoDoClaudeCode() async throws {
+        let (engine, client, _) = try boot()
+        defer { engine.stop() }
+        // injeta na env base do engine (como se o app tivesse sido lançado de dentro
+        // de uma sessão do Claude Code)
+        engine.stateQueue.sync {
+            engine.baseEnvironment["CLAUDE_CODE_FAKE"] = "1"
+            engine.baseEnvironment["CLAUDECODE"] = "1"
+            engine.baseEnvironment["ANTHROPIC_TESTE"] = "fica"
+            engine.baseEnvironment["COLMEIA_TESTE_CONTROLE"] = "ctl-123"
+        }
+        _ = try await client.hello(client: "test")
+        let created = try await client.call(
+            .workspaceCreate, params: WorkspaceCreateParams(nome: "env"), expecting: WorkspaceResult.self)
+        let wsID = created.workspace.id
+        let node = makeTerminalNode(nome: "Env", override: "env; sleep 0.2")
+        _ = try await client.call(
+            .docApply,
+            params: DocApplyParams(workspaceID: wsID, ops: [proposal(.nodeAdd(NodeAddOpPayload(node: .terminal(node))))]))
+        let started = try await client.call(
+            .sessionStart, params: SessionStartParams(workspaceID: wsID, nodeID: node.id),
+            expecting: SessionResult.self)
+        var terminou = false
+        for _ in 0..<50 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            let list = try await client.call(
+                .sessionList, params: SessionListParams(workspaceID: wsID), expecting: [Session].self)
+            if let session = list.first(where: { $0.id == started.session.id }), !session.estado.isViva {
+                terminou = true
+                break
+            }
+        }
+        #expect(terminou)
+        let replay = try await client.call(
+            .sessionReplay, params: SessionReplayParams(sessionID: started.session.id),
+            expecting: SessionReplayResult.self)
+        let texto = replay.events.compactMap { event -> String? in
+            if case .output(let payload) = event.payload,
+               let data = Data(base64Encoded: payload.dataB64) {
+                return String(decoding: data, as: UTF8.self)
+            }
+            return nil
+        }.joined()
+        // gate não-oco: a var de controle PROVA que a env base chegou ao PTY…
+        #expect(texto.contains("COLMEIA_TESTE_CONTROLE=ctl-123"))
+        #expect(texto.contains("ANTHROPIC_TESTE=fica")) // conservador: ANTHROPIC_* passa
+        #expect(texto.contains("COLMEIA_SESSION_ID=\(started.session.id.string)"))
+        // …e os marcadores foram removidos no spawn
+        #expect(!texto.contains("CLAUDE_CODE_FAKE"))
+        #expect(!texto.contains("CLAUDECODE="))
         client.close()
     }
 

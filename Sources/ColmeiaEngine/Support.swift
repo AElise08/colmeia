@@ -110,6 +110,25 @@ enum InstanceLock {
     }
 }
 
+// MARK: - Env das sessões (§10.2)
+
+/// Ponto engine-agnóstico de montagem da env do PTY (vale para TODOS os adapters).
+/// O app/engine pode ter sido lançado de dentro de uma sessão do Claude Code — a env
+/// herdada carregaria marcadores de "sessão filha" (ex.: CLAUDE_CODE_CHILD_SESSION)
+/// e agentes Claude Code dentro da Colmeia nasceriam degradados.
+enum SessionEnv {
+    /// Env herdada do processo do engine SEM marcadores de sessão do Claude Code.
+    /// Conservador: remove APENAS nomes `CLAUDE_CODE_*` / `CLAUDECODE*`; `ANTHROPIC_*`
+    /// (credenciais/config) e todo o resto passam intactos.
+    static func inherited(from base: [String: String]) -> [String: String] {
+        base.filter { !isClaudeCodeSessionMarker($0.key) }
+    }
+
+    static func isClaudeCodeSessionMarker(_ name: String) -> Bool {
+        name.hasPrefix("CLAUDE_CODE_") || name.hasPrefix("CLAUDECODE")
+    }
+}
+
 // MARK: - Falhas internas
 
 enum EngineFailure: Error, CustomStringConvertible {
