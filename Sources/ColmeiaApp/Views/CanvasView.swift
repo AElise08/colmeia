@@ -3,6 +3,13 @@ import AppKit
 import SwiftTerm
 import ColmeiaKit
 
+/// Espaço de coordenadas FIXO do canvas (tela): gestos de drag dos nós medem a
+/// translação aqui — nunca no espaço local do nó, que se move junto com o gesto
+/// (feedback → o nó "voa" para longe e some).
+enum CanvasSpace {
+    static let nome = "colmeia-canvas"
+}
+
 struct CanvasView: View {
     @EnvironmentObject private var store: AppStore
 
@@ -19,8 +26,10 @@ struct CanvasView: View {
                     .gesture(panGesture)
                     .onTapGesture {
                         store.selection = nil
+                        store.connectionSelection = nil
                         store.returnFocusToCanvas()
                     }
+                ConnectionsLayer()
                 nodeLayer
                 if store.ferramentaDesenho != nil {
                     DrawingLayer()
@@ -31,6 +40,7 @@ struct CanvasView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
             .clipped()
+            .coordinateSpace(name: CanvasSpace.nome)
             .simultaneousGesture(magnificationGesture)
             .onAppear {
                 store.canvasSize = geo.size
@@ -127,6 +137,14 @@ struct CanvasView: View {
         let store = self.store
         let lastEscBox = LastEscBox()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 51 || event.keyCode == 117,
+               let window = event.window, window.isKeyWindow,
+               let connID = store.connectionSelection,
+               !(window.firstResponder is NSText),
+               (window.firstResponder as? NSView).flatMap(terminalAncestral(of:)) == nil {
+                store.deleteConnection(connID)
+                return nil
+            }
             guard event.keyCode == 53,
                   let window = event.window,
                   let responder = window.firstResponder as? NSView,
@@ -198,28 +216,37 @@ struct GridBackground: View {
     }
 }
 
-/// Chrome comum: arrasto (node.move), redimensionamento (node.resize), seleção.
+/// Chrome comum: arrasto (node.move), redimensionamento (node.resize), seleção,
+/// alça de conexão (§5.3). Gestos medem no espaço nomeado do canvas: a base é
+/// capturada no primeiro onChanged e a translação (tela ÷ zoom) aplicada sobre ela —
+/// nunca sobre a posição corrente, que muda durante o gesto.
 struct NodeContainerView: View {
     let node: Node
     let zoom: Double
     let conteudoVisivel: Bool
 
     @EnvironmentObject private var store: AppStore
-    @State private var dragOffset: CGSize = .zero
-    @State private var resizeDelta: CGSize = .zero
+    @State private var dragBase: Ponto?
+    @State private var resizeBase: Tamanho?
+    @State private var hovering = false
+    @State private var conectando = false
 
     var body: some View {
         content
             .overlay(alignment: .bottomTrailing) { resizeHandle }
+            .overlay(alignment: .trailing) { connectionHandle }
             .overlay {
                 if store.selection == node.id {
                     RoundedRectangle(cornerRadius: 10)
                         .stroke(Color.accentColor, lineWidth: 2 / zoom)
                 }
             }
-            .offset(dragOffset)
             .onTapGesture {
                 store.selection = node.id
+                store.connectionSelection = nil
+            }
+            .onHover { dentro in
+                hovering = dentro
             }
     }
 
@@ -238,25 +265,39 @@ struct NodeContainerView: View {
             NotaNodeView(node: nota, controller: store.notaController(for: nota), dragGesture: moveGesture)
         case .desenho(let desenho):
             DesenhoNodeView(node: desenho, dragGesture: moveGesture)
+        case .portal(let portal):
+            PortalNodeView(node: portal, controller: store.portalController(for: portal), dragGesture: moveGesture)
         }
     }
 
     private var moveGesture: some Gesture {
-        DragGesture(minimumDistance: 2)
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(CanvasSpace.nome))
             .onChanged { value in
-                store.selection = node.id
-                dragOffset = CGSize(
-                    width: value.translation.width / zoom,
-                    height: value.translation.height / zoom
-                )
+                if dragBase == nil {
+                    store.beginNodeDrag(node.id)
+                    dragBase = store.nodeDragBase
+                }
+                guard let base = dragBase,
+                      let destino = CanvasMath.destinoDoDrag(
+                        base: base,
+                        translacaoTela: Ponto(x: value.translation.width, y: value.translation.height),
+                        zoom: zoom
+                      ) else { return }
+                store.dragNode(node.id, to: destino)
             }
             .onEnded { value in
-                dragOffset = .zero
-                let destino = Ponto(
-                    x: node.posicao.x + Double(value.translation.width) / zoom,
-                    y: node.posicao.y + Double(value.translation.height) / zoom
-                )
-                store.moveNode(node.id, to: destino)
+                let base = dragBase
+                dragBase = nil
+                guard let base else { return }
+                guard let destino = CanvasMath.destinoDoDrag(
+                    base: base,
+                    translacaoTela: Ponto(x: value.translation.width, y: value.translation.height),
+                    zoom: zoom
+                ) else {
+                    store.cancelNodeDrag()
+                    return
+                }
+                store.endNodeDrag(node.id, at: destino)
             }
     }
 
@@ -267,19 +308,64 @@ struct NodeContainerView: View {
             .padding(4)
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        resizeDelta = value.translation
+                DragGesture(minimumDistance: 1, coordinateSpace: .named(CanvasSpace.nome))
+                    .onChanged { _ in
+                        if resizeBase == nil { resizeBase = node.tamanho }
                     }
                     .onEnded { value in
-                        resizeDelta = .zero
+                        let base = resizeBase ?? node.tamanho
+                        resizeBase = nil
                         let tamanho = Tamanho(
-                            w: max(160, node.tamanho.w + Double(value.translation.width) / zoom),
-                            h: max(100, node.tamanho.h + Double(value.translation.height) / zoom)
+                            w: max(160, base.w + Double(value.translation.width) / zoom),
+                            h: max(100, base.h + Double(value.translation.height) / zoom)
                         )
                         store.resizeNode(node.id, to: tamanho)
                     }
             )
+    }
+
+    /// Alça de conexão (§5.3): aparece no hover; arrastar até outro nó cria a
+    /// Connection com a semântica do par (terminal→nota = escrita-de-nota,
+    /// terminal→terminal = conversa, resto = visual).
+    @ViewBuilder
+    private var connectionHandle: some View {
+        if hovering || conectando {
+            ZStack {
+                Circle()
+                    .fill(Color(nsColor: .windowBackgroundColor))
+                Circle()
+                    .stroke(Color.accentColor, lineWidth: 1.5)
+                Image(systemName: "link")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .frame(width: 16, height: 16)
+            .contentShape(Circle().inset(by: -6))
+            .offset(x: 8)
+            .help("Arraste até outro nó para conectar")
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .named(CanvasSpace.nome))
+                    .onChanged { value in
+                        conectando = true
+                        let mundo = CanvasMath.telaParaMundo(
+                            Ponto(x: value.location.x, y: value.location.y),
+                            viewport: store.viewport
+                        )
+                        store.conexaoPendente = ConexaoPendente(de: node.id, ateMundo: mundo)
+                    }
+                    .onEnded { value in
+                        conectando = false
+                        store.conexaoPendente = nil
+                        let mundo = CanvasMath.telaParaMundo(
+                            Ponto(x: value.location.x, y: value.location.y),
+                            viewport: store.viewport
+                        )
+                        if let alvo = store.node(atWorldPoint: mundo, excluindo: node.id) {
+                            store.connect(from: node.id, to: alvo)
+                        }
+                    }
+            )
+        }
     }
 }
 

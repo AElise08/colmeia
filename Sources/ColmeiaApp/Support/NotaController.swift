@@ -51,6 +51,28 @@ final class NotaController: ObservableObject {
         try? texto.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
+    /// Alterna `- [ ]`/`- [x]` na linha (0-based) e persiste no .md — o caminho de
+    /// "editor externo" sancionado pela §15.1. Retorna true se a linha era uma tarefa.
+    @discardableResult
+    func toggleTarefa(linha: Int) -> Bool {
+        var linhas = texto.components(separatedBy: "\n")
+        guard linhas.indices.contains(linha),
+              let alterada = Self.alternarCheckbox(linhas[linha]) else { return false }
+        linhas[linha] = alterada
+        texto = linhas.joined(separator: "\n")
+        persist()
+        return true
+    }
+
+    static func alternarCheckbox(_ linha: String) -> String? {
+        guard let abre = linha.range(of: #"^\s*[-*]\s+\["#, options: .regularExpression) else { return nil }
+        let resto = linha[abre.upperBound...]
+        guard let fecha = resto.firstIndex(of: "]") else { return nil }
+        let estado = linha[abre.upperBound..<fecha].trimmingCharacters(in: .whitespaces).lowercased()
+        guard estado.isEmpty || estado == "x" else { return nil }
+        return linha.replacingCharacters(in: abre.upperBound..<fecha, with: estado == "x" ? " " : "x")
+    }
+
     private func startWatching() {
         stopWatching()
         let fd = open(fileURL.path, O_EVTONLY)

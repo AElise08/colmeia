@@ -23,6 +23,8 @@ public enum ColmeiaMethod: String, Codable, CaseIterable, Sendable {
     case approvalResolve = "approval.resolve"
     case messageSend = "message.send"
     case noteAppend = "note.append"
+    /// Extensão forward-compatible (§0): [v1.5 antecipado] — cria nó portal validado.
+    case portalOpen = "portal.open"
     case routineCreate = "routine.create"
     case routineUpdate = "routine.update"
     case routineDelete = "routine.delete"
@@ -528,6 +530,42 @@ public struct NoteAppendResult: Codable, Equatable, Sendable {
 
     public init(notaNodeID: ULID) {
         self.notaNodeID = notaNodeID
+    }
+}
+
+// MARK: - portal.open ([v1.5] antecipado)
+
+/// `portal.open {workspace_id, url, nome?}` → engine valida a URL (http/https apenas;
+/// senão `invalid_params`), cria op `node.add` de PortalNode pelo caminho interno de
+/// `doc.apply` e retorna `{node_id}`. Clientes veem o `node.add` pelo tópico
+/// `document.op` normalmente. Navegar portal existente = `node.update {url}` comum.
+public struct PortalOpenParams: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var url: String
+    /// Apelido inicial do portal (vira `titulo` até a página fornecer o próprio).
+    public var nome: String?
+
+    enum CodingKeys: String, CodingKey {
+        case url, nome
+        case workspaceID = "workspace_id"
+    }
+
+    public init(workspaceID: ULID, url: String, nome: String? = nil) {
+        self.workspaceID = workspaceID
+        self.url = url
+        self.nome = nome
+    }
+}
+
+public struct PortalOpenResult: Codable, Equatable, Sendable {
+    public var nodeID: ULID
+
+    enum CodingKeys: String, CodingKey {
+        case nodeID = "node_id"
+    }
+
+    public init(nodeID: ULID) {
+        self.nodeID = nodeID
     }
 }
 

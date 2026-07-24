@@ -81,16 +81,27 @@ final class TerminalController: NSObject, ObservableObject {
                 expecting: SessionAttachResult.self
             )
             adopt(session: result.session)
-            for event in result.replay {
-                if case .output(let payload) = event.payload {
-                    ingest(seq: event.seq, dataB64: payload.dataB64)
-                } else {
-                    lastSeq = max(lastSeq, event.seq)
-                }
-            }
+            feedReplay(result.replay)
         } catch {
             // Sessão pode ter morrido entre list e attach; o estado chega por session.state.
         }
+    }
+
+    /// Replay em UM feed: journals grandes não podem virar milhares de passadas
+    /// (decode + regex + feed) no main actor durante o launch (§21.1).
+    private func feedReplay(_ events: [Event]) {
+        var dados = Data()
+        for event in events {
+            guard event.seq > lastSeq else { continue }
+            lastSeq = event.seq
+            if case .output(let payload) = event.payload,
+               let data = Data(base64Encoded: payload.dataB64) {
+                dados.append(data)
+            }
+        }
+        guard !dados.isEmpty else { return }
+        terminalView.feed(byteArray: [UInt8](dados)[...])
+        refreshUltimaLinha(Data(dados.suffix(4096)))
     }
 
     func detach() {
@@ -108,11 +119,7 @@ final class TerminalController: NSObject, ObservableObject {
             params: SessionReplayParams(sessionID: sessionID),
             expecting: SessionReplayResult.self
         ) else { return }
-        for event in result.events {
-            if case .output(let payload) = event.payload {
-                ingest(seq: event.seq, dataB64: payload.dataB64)
-            }
-        }
+        feedReplay(result.events)
     }
 
     func kill(sinal: KillSinal = .term) async {
@@ -125,6 +132,10 @@ final class TerminalController: NSObject, ObservableObject {
         lastSeq = seq
         guard let data = Data(base64Encoded: dataB64) else { return }
         terminalView.feed(byteArray: [UInt8](data)[...])
+        refreshUltimaLinha(data)
+    }
+
+    private func refreshUltimaLinha(_ data: Data) {
         if let text = String(data: data, encoding: .utf8) {
             let lines = text.split(whereSeparator: \.isNewline)
             if let last = lines.last {

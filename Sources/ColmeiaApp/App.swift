@@ -50,10 +50,16 @@ struct ColmeiaCanvasApp: App {
                     .disabled(!store.canRedo)
             }
             CommandGroup(replacing: .newItem) {
-                Button("Novo Terminal…") { store.showNewTerminal = true }
-                    .keyboardShortcut("n", modifiers: .command)
+                Button("Novo Terminal (Claude Code)") {
+                    Task { await store.quickStartTerminal(adapter: KnownAdapter.claudeCode.rawValue) }
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                Button("Novo Terminal com opções…") { store.showNewTerminal = true }
+                    .keyboardShortcut("n", modifiers: [.command, .option])
                 Button("Nova Nota") { store.addNota() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("Novo Portal") { store.showNewPortal = true }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
             }
             CommandMenu("Canvas") {
                 // ⌘= é o "⌘+" físico em teclados ANSI/ABNT.

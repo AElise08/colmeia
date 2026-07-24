@@ -28,9 +28,10 @@ enum StatusCommand {
         var nos: [Row]
         var notas: Int
         var desenhos: Int
+        var portais: Int
 
         enum CodingKeys: String, CodingKey {
-            case nos, notas, desenhos
+            case nos, notas, desenhos, portais
             case workspaceID = "workspace_id"
         }
     }
@@ -98,6 +99,7 @@ enum StatusCommand {
         var rows: [Row] = []
         var notas = 0
         var desenhos = 0
+        var portais = 0
 
         for node in snapshot.documentSnapshot.nodes {
             switch node {
@@ -105,6 +107,8 @@ enum StatusCommand {
                 notas += 1
             case .desenho:
                 desenhos += 1
+            case .portal:
+                portais += 1
             case .terminal(let terminal):
                 let vivaOuRecente = pickSession(for: terminal, in: sessions)
                 let estadoDesde = vivaOuRecente.map { entry -> Date in
@@ -125,7 +129,7 @@ enum StatusCommand {
         }
         rows.sort { $0.nome.lowercased() < $1.nome.lowercased() }
 
-        let report = Report(workspaceID: workspaceID, nos: rows, notas: notas, desenhos: desenhos)
+        let report = Report(workspaceID: workspaceID, nos: rows, notas: notas, desenhos: desenhos, portais: portais)
         if json {
             let encoder = ColmeiaJSON.encoder()
             encoder.outputFormatting.insert(.prettyPrinted)
@@ -229,8 +233,8 @@ enum StatusCommand {
                 print(celulas.joined(separator: "  ").trimmingCharacters(in: .whitespaces))
             }
         }
-        if report.notas > 0 || report.desenhos > 0 {
-            print("(\(report.notas) nota(s), \(report.desenhos) desenho(s))")
+        if report.notas > 0 || report.desenhos > 0 || report.portais > 0 {
+            print("(\(report.notas) nota(s), \(report.desenhos) desenho(s), \(report.portais) portal(is))")
         }
     }
 

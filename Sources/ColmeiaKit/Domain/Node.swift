@@ -1,6 +1,6 @@
 import Foundation
 
-/// §5.2 — `portal` é [v1.5]: reconhecido no enum, mas sem nó concreto na v1.
+/// §5.2 — tipos de nó do canvas. `portal` é [v1.5] antecipado: navegador embutido.
 public enum NodeTipo: String, Codable, CaseIterable, Sendable {
     case terminal, nota, desenho, portal
 }
@@ -185,12 +185,52 @@ public struct DesenhoNode: Codable, Equatable, Sendable {
     }
 }
 
+/// [v1.5 antecipado] — portal = janela de navegador embutida (WKWebView na UI) como
+/// nó do canvas. Navegar um portal existente é `node.update {url}` comum (§7.2);
+/// a criação validada por URL tem método próprio (`portal.open`).
+public struct PortalNode: Codable, Equatable, Sendable {
+    public var id: ULID
+    public var posicao: Ponto
+    public var tamanho: Tamanho
+    public var z: Int
+    public var criadoEm: Date
+    /// URL corrente do portal. `portal.open` só aceita http/https; via `node.add`/
+    /// `node.update` direto o campo é livre (ex.: about:blank da UI).
+    public var url: String
+    /// Título da página (quando disponível) ou apelido dado na criação.
+    public var titulo: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, posicao, tamanho, z, url, titulo
+        case criadoEm = "criado_em"
+    }
+
+    public init(
+        id: ULID,
+        posicao: Ponto,
+        tamanho: Tamanho,
+        z: Int = 0,
+        criadoEm: Date,
+        url: String,
+        titulo: String? = nil
+    ) {
+        self.id = id
+        self.posicao = posicao
+        self.tamanho = tamanho
+        self.z = z
+        self.criadoEm = criadoEm
+        self.url = url
+        self.titulo = titulo
+    }
+}
+
 /// Nó polimórfico do canvas. No wire os campos ficam achatados com discriminador `tipo`,
 /// como nos schemas "extends Node" da §5.2.
 public enum Node: Codable, Equatable, Sendable {
     case terminal(TerminalNode)
     case nota(NotaNode)
     case desenho(DesenhoNode)
+    case portal(PortalNode)
 
     private enum TipoKey: String, CodingKey { case tipo }
 
@@ -205,10 +245,7 @@ public enum Node: Codable, Equatable, Sendable {
         case .desenho:
             self = .desenho(try DesenhoNode(from: decoder))
         case .portal:
-            throw DecodingError.dataCorrupted(DecodingError.Context(
-                codingPath: decoder.codingPath,
-                debugDescription: "portal é [v1.5] — sem suporte na v1"
-            ))
+            self = .portal(try PortalNode(from: decoder))
         }
     }
 
@@ -219,6 +256,7 @@ public enum Node: Codable, Equatable, Sendable {
         case .terminal(let node): try node.encode(to: encoder)
         case .nota(let node): try node.encode(to: encoder)
         case .desenho(let node): try node.encode(to: encoder)
+        case .portal(let node): try node.encode(to: encoder)
         }
     }
 
@@ -227,6 +265,7 @@ public enum Node: Codable, Equatable, Sendable {
         case .terminal: return .terminal
         case .nota: return .nota
         case .desenho: return .desenho
+        case .portal: return .portal
         }
     }
 
@@ -235,6 +274,7 @@ public enum Node: Codable, Equatable, Sendable {
         case .terminal(let node): return node.id
         case .nota(let node): return node.id
         case .desenho(let node): return node.id
+        case .portal(let node): return node.id
         }
     }
 
@@ -243,6 +283,7 @@ public enum Node: Codable, Equatable, Sendable {
         case .terminal(let node): return node.posicao
         case .nota(let node): return node.posicao
         case .desenho(let node): return node.posicao
+        case .portal(let node): return node.posicao
         }
     }
 
@@ -251,6 +292,7 @@ public enum Node: Codable, Equatable, Sendable {
         case .terminal(let node): return node.tamanho
         case .nota(let node): return node.tamanho
         case .desenho(let node): return node.tamanho
+        case .portal(let node): return node.tamanho
         }
     }
 
@@ -259,6 +301,7 @@ public enum Node: Codable, Equatable, Sendable {
         case .terminal(let node): return node.z
         case .nota(let node): return node.z
         case .desenho(let node): return node.z
+        case .portal(let node): return node.z
         }
     }
 
@@ -267,6 +310,7 @@ public enum Node: Codable, Equatable, Sendable {
         case .terminal(let node): return node.criadoEm
         case .nota(let node): return node.criadoEm
         case .desenho(let node): return node.criadoEm
+        case .portal(let node): return node.criadoEm
         }
     }
 }

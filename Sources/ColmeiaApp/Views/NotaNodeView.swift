@@ -1,7 +1,34 @@
 import SwiftUI
 import ColmeiaKit
 
-/// §15.1 — Markdown renderizado; edição em texto puro ao focar; cores; `ultima_fonte` visível.
+/// Papel claro + tinta escura derivada da cor — legível nos DOIS modos do sistema.
+enum NotaPaleta {
+    static let base: [(nome: String, r: Double, g: Double, b: Double)] = [
+        ("amarelo", 1.0, 0.92, 0.6),
+        ("rosa", 1.0, 0.78, 0.85),
+        ("verde", 0.78, 0.94, 0.75),
+        ("azul", 0.74, 0.87, 1.0),
+        ("roxo", 0.87, 0.8, 1.0),
+    ]
+
+    static var cores: [(nome: String, cor: Color)] {
+        base.map { ($0.nome, Color(red: $0.r, green: $0.g, blue: $0.b)) }
+    }
+
+    static func cor(_ nome: String) -> Color {
+        let tom = base.first { $0.nome == nome } ?? base[0]
+        return Color(red: tom.r, green: tom.g, blue: tom.b)
+    }
+
+    static func tinta(_ nome: String) -> Color {
+        let tom = base.first { $0.nome == nome } ?? base[0]
+        return Color(red: tom.r * 0.24, green: tom.g * 0.24, blue: tom.b * 0.24)
+    }
+}
+
+/// §15.1 — Markdown renderizado (títulos, listas, checkboxes clicáveis); edição em
+/// texto puro ao focar; cores; `ultima_fonte` visível. A nota é PAPEL CLARO: o texto
+/// é sempre tinta escura derivada da cor da nota, independente do dark mode.
 struct NotaNodeView<Drag: Gesture>: View {
     let node: NotaNode
     @ObservedObject var controller: NotaController
@@ -10,18 +37,14 @@ struct NotaNodeView<Drag: Gesture>: View {
     @EnvironmentObject private var store: AppStore
     @FocusState private var editorFocado: Bool
 
-    static var cores: [(nome: String, cor: Color)] {
-        [
-            ("amarelo", Color(red: 1.0, green: 0.92, blue: 0.6)),
-            ("rosa", Color(red: 1.0, green: 0.78, blue: 0.85)),
-            ("verde", Color(red: 0.78, green: 0.94, blue: 0.75)),
-            ("azul", Color(red: 0.74, green: 0.87, blue: 1.0)),
-            ("roxo", Color(red: 0.87, green: 0.8, blue: 1.0)),
-        ]
-    }
+    static var cores: [(nome: String, cor: Color)] { NotaPaleta.cores }
 
     private var corFundo: Color {
-        Self.cores.first { $0.nome == node.cor }?.cor ?? Self.cores[0].cor
+        NotaPaleta.cor(node.cor)
+    }
+
+    private var tinta: Color {
+        NotaPaleta.tinta(node.cor)
     }
 
     var body: some View {
@@ -33,6 +56,8 @@ struct NotaNodeView<Drag: Gesture>: View {
         .background(corFundo.opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.12), lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .environment(\.colorScheme, .light)
+        .tint(tinta)
     }
 
     private var header: some View {
@@ -69,6 +94,7 @@ struct NotaNodeView<Drag: Gesture>: View {
                 set: { controller.textoEditado($0) }
             ))
             .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(tinta)
             .scrollContentBackground(.hidden)
             .focused($editorFocado)
             .padding(4)
@@ -77,11 +103,16 @@ struct NotaNodeView<Drag: Gesture>: View {
             }
         } else {
             ScrollView {
-                Text(markdown)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.black.opacity(0.85))
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(8)
+                NotaMarkdownView(texto: controller.texto, tinta: tinta) { linha in
+                    if controller.toggleTarefa(linha: linha) {
+                        store.perform(.nodeUpdate(NodeUpdateOpPayload(
+                            id: node.id,
+                            campos: .object(["ultima_fonte": .string(Author.humanoLocal.rawValue)])
+                        )))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(8)
             }
             .contentShape(Rectangle())
             .onTapGesture(count: 2) {
@@ -89,14 +120,6 @@ struct NotaNodeView<Drag: Gesture>: View {
                 editorFocado = true
             }
         }
-    }
-
-    private var markdown: AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace
-        )
-        return (try? AttributedString(markdown: controller.texto, options: options))
-            ?? AttributedString(controller.texto)
     }
 
     private var rodape: some View {
@@ -138,6 +161,146 @@ struct NotaNodeView<Drag: Gesture>: View {
             id: node.id,
             campos: .object(["ultima_fonte": .string(Author.humanoLocal.rawValue)])
         )))
+    }
+}
+
+/// Markdown de nota por blocos: títulos com hierarquia real, listas, checkboxes
+/// clicáveis (`- [ ]`/`- [x]` → alterna e persiste no .md) e inline bold/itálico/código.
+struct NotaMarkdownView: View {
+    let texto: String
+    let tinta: Color
+    let onToggleTarefa: (Int) -> Void
+
+    private enum Bloco: Identifiable {
+        case titulo(linha: Int, nivel: Int, texto: String)
+        case tarefa(linha: Int, feita: Bool, texto: String)
+        case item(linha: Int, marcador: String, texto: String)
+        case paragrafo(linha: Int, texto: String)
+        case separador(linha: Int)
+        case vazio(linha: Int)
+
+        var id: Int {
+            switch self {
+            case .titulo(let linha, _, _), .tarefa(let linha, _, _), .item(let linha, _, _),
+                 .paragrafo(let linha, _), .separador(let linha), .vazio(let linha):
+                return linha
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(blocos) { bloco in
+                render(bloco)
+            }
+        }
+    }
+
+    private var blocos: [Bloco] {
+        texto.components(separatedBy: "\n").enumerated().map { (linha, conteudo) -> Bloco in
+            let aparado = conteudo.trimmingCharacters(in: .whitespaces)
+            if aparado.isEmpty {
+                return .vazio(linha: linha)
+            }
+            if aparado == "---" || aparado == "***" {
+                return .separador(linha: linha)
+            }
+            if aparado.hasPrefix("#") {
+                let nivel = aparado.prefix(while: { $0 == "#" }).count
+                let resto = aparado.drop(while: { $0 == "#" })
+                if nivel <= 6, resto.first == " " {
+                    return .titulo(linha: linha, nivel: nivel, texto: resto.trimmingCharacters(in: .whitespaces))
+                }
+            }
+            if let marcador = aparado.first, marcador == "-" || marcador == "*" {
+                let resto = aparado.dropFirst().trimmingCharacters(in: .whitespaces)
+                for (caixa, feita) in [("[ ]", false), ("[x]", true), ("[X]", true)] where resto.hasPrefix(caixa) {
+                    return .tarefa(
+                        linha: linha,
+                        feita: feita,
+                        texto: resto.dropFirst(caixa.count).trimmingCharacters(in: .whitespaces)
+                    )
+                }
+                if !resto.isEmpty {
+                    return .item(linha: linha, marcador: "•", texto: resto)
+                }
+            }
+            if let ponto = aparado.firstIndex(where: { $0 == "." || $0 == ")" }),
+               ponto != aparado.startIndex,
+               aparado[..<ponto].allSatisfy(\.isNumber),
+               aparado.index(after: ponto) < aparado.endIndex,
+               aparado[aparado.index(after: ponto)] == " " {
+                return .item(
+                    linha: linha,
+                    marcador: "\(aparado[..<ponto]).",
+                    texto: aparado[aparado.index(after: ponto)...].trimmingCharacters(in: .whitespaces)
+                )
+            }
+            return .paragrafo(linha: linha, texto: conteudo)
+        }
+    }
+
+    @ViewBuilder
+    private func render(_ bloco: Bloco) -> some View {
+        switch bloco {
+        case .titulo(_, let nivel, let texto):
+            Text(inline(texto))
+                .font(fonteTitulo(nivel))
+                .foregroundStyle(tinta)
+                .padding(.top, nivel <= 2 ? 4 : 2)
+        case .tarefa(let linha, let feita, let texto):
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Button {
+                    onToggleTarefa(linha)
+                } label: {
+                    Image(systemName: feita ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 12))
+                        .foregroundStyle(tinta.opacity(feita ? 0.9 : 0.6))
+                }
+                .buttonStyle(.plain)
+                Text(inline(texto))
+                    .font(.system(size: 12))
+                    .strikethrough(feita, color: tinta.opacity(0.5))
+                    .foregroundStyle(tinta.opacity(feita ? 0.5 : 0.9))
+            }
+        case .item(_, let marcador, let texto):
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(marcador)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(tinta.opacity(0.6))
+                Text(inline(texto))
+                    .font(.system(size: 12))
+                    .foregroundStyle(tinta.opacity(0.9))
+            }
+        case .paragrafo(_, let texto):
+            Text(inline(texto))
+                .font(.system(size: 12))
+                .foregroundStyle(tinta.opacity(0.9))
+        case .separador:
+            Rectangle()
+                .fill(tinta.opacity(0.25))
+                .frame(height: 1)
+                .padding(.vertical, 3)
+        case .vazio:
+            Spacer()
+                .frame(height: 4)
+        }
+    }
+
+    private func fonteTitulo(_ nivel: Int) -> Font {
+        switch nivel {
+        case 1: return .system(size: 17, weight: .bold)
+        case 2: return .system(size: 15, weight: .bold)
+        case 3: return .system(size: 13, weight: .semibold)
+        default: return .system(size: 12, weight: .semibold)
+        }
+    }
+
+    private func inline(_ texto: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace
+        )
+        return (try? AttributedString(markdown: texto, options: options)) ?? AttributedString(texto)
     }
 }
 

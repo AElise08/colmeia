@@ -1,8 +1,8 @@
 import SwiftUI
 import ColmeiaKit
 
-/// Diálogo "Novo Terminal" (§5.2.1): quick-start por adapter, nome, comando
-/// override, cwd e monitorar atividade.
+/// Opções avançadas do "Novo Terminal" (§5.2.1): o caminho de um passo é o menu
+/// quick-start da toolbar; este diálogo cobre nome/papel/comando/cwd/monitorar.
 struct NewTerminalSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
@@ -23,6 +23,7 @@ struct NewTerminalSheet: View {
 
     @State private var adapter: String = KnownAdapter.claudeCode.rawValue
     @State private var nome = ""
+    @State private var nomeAuto = ""
     @State private var papel = ""
     @State private var comandoOverride = ""
     @State private var cwd = ""
@@ -38,8 +39,9 @@ struct NewTerminalSheet: View {
                 ForEach(Self.quickStarts) { qs in
                     Button {
                         adapter = qs.id
-                        if nome.isEmpty || Self.quickStarts.contains(where: { $0.nome == nome }) {
-                            nome = qs.nome
+                        if nome.isEmpty || nome == nomeAuto {
+                            nome = store.nomeAutomatico(adapter: qs.id)
+                            nomeAuto = nome
                         }
                     } label: {
                         VStack(spacing: 4) {
@@ -85,7 +87,10 @@ struct NewTerminalSheet: View {
         .padding(20)
         .frame(width: 480)
         .onAppear {
-            if nome.isEmpty { nome = "Claude Code" }
+            if nome.isEmpty {
+                nome = store.nomeAutomatico(adapter: adapter)
+                nomeAuto = nome
+            }
         }
     }
 

@@ -1,10 +1,16 @@
 import Foundation
 import SwiftUI
+import os
 import ColmeiaKit
 
 struct UndoEntry {
-    let undoOp: OpPayload
-    let redoOp: OpPayload
+    let undoOps: [OpPayload]
+    let redoOps: [OpPayload]
+}
+
+struct ConexaoPendente: Equatable {
+    var de: ULID
+    var ateMundo: Ponto
 }
 
 /// Estado espelhado do engine + intenções da usuária. Toda mutação do documento sai
@@ -23,8 +29,12 @@ final class AppStore: ObservableObject {
     @Published private(set) var routines: [Routine] = []
     @Published var viewport = Viewport()
     @Published var selection: ULID?
+    @Published var connectionSelection: ULID?
+    @Published var conexaoPendente: ConexaoPendente?
     @Published var lastError: String?
+    @Published var avisoInfo: String?
     @Published var showNewTerminal = false
+    @Published var showNewPortal = false
     @Published var showApprovals = false
     @Published var showRoutines = false
 
@@ -39,12 +49,18 @@ final class AppStore: ObservableObject {
 
     private(set) var terminalControllers: [ULID: TerminalController] = [:]
     private(set) var notaControllers: [ULID: NotaController] = [:]
+    private(set) var portalControllers: [ULID: PortalController] = [:]
 
     private var undoStack: [UndoEntry] = []
     private var redoStack: [UndoEntry] = []
     private var pendingOpIDs: Set<ULID> = []
     private var viewportTask: Task<Void, Never>?
+    private var avisoTask: Task<Void, Never>?
+    private(set) var draggingNodeID: ULID?
+    private var dragBase: Ponto?
     var canvasSize: CGSize = CGSize(width: 1200, height: 800)
+
+    private static let log = Logger(subsystem: "colmeia.canvas", category: "documento")
 
     private static let lastWorkspaceKey = "colmeia.ultimo-workspace"
 
@@ -115,9 +131,14 @@ final class AppStore: ObservableObject {
             for controller in terminalControllers.values { controller.detach() }
             terminalControllers.removeAll()
             notaControllers.removeAll()
+            portalControllers.removeAll()
             undoStack.removeAll()
             redoStack.removeAll()
             selection = nil
+            connectionSelection = nil
+            conexaoPendente = nil
+            draggingNodeID = nil
+            dragBase = nil
 
             workspace = result.workspace
             if restoreViewport {
@@ -154,18 +175,23 @@ final class AppStore: ObservableObject {
             expecting: SessionListResult.self
         )) ?? []
         // `session.list` pode trazer o histórico do nó; vale a viva, senão a mais recente.
+        // Attaches em paralelo: replay de journals grandes não pode serializar o launch (§21.1).
         let porNode = Dictionary(grouping: sessions, by: \.nodeID)
-        for (nodeID, candidatas) in porNode {
-            guard case .terminal = nodes[nodeID] else { continue }
-            let escolhida = candidatas.first(where: { $0.estado.isViva })
-                ?? candidatas.max(by: { $0.iniciadaEm < $1.iniciadaEm })
-            guard let session = escolhida else { continue }
-            let controller = terminalController(for: nodeID)
-            controller.adopt(session: session)
-            if session.estado.isViva {
-                await controller.attach()
-            } else {
-                await controller.restoreDeadFrame()
+        await withTaskGroup(of: Void.self) { group in
+            for (nodeID, candidatas) in porNode {
+                guard case .terminal = nodes[nodeID] else { continue }
+                let escolhida = candidatas.first(where: { $0.estado.isViva })
+                    ?? candidatas.max(by: { $0.iniciadaEm < $1.iniciadaEm })
+                guard let session = escolhida else { continue }
+                let controller = terminalController(for: nodeID)
+                controller.adopt(session: session)
+                group.addTask { @MainActor in
+                    if session.estado.isViva {
+                        await controller.attach()
+                    } else {
+                        await controller.restoreDeadFrame()
+                    }
+                }
             }
         }
     }
@@ -205,6 +231,26 @@ final class AppStore: ObservableObject {
         return controller
     }
 
+    /// Um controller (e um WKWebView) por portal. Navegação interna do webview e
+    /// título viram `node.update` (não-undoable: estado derivado da navegação).
+    func portalController(for node: PortalNode) -> PortalController {
+        if let existing = portalControllers[node.id] { return existing }
+        let controller = PortalController(nodeID: node.id)
+        let nodeID = node.id
+        controller.onURLNavegada = { [weak self] nova in
+            guard let self, case .portal(let atual)? = self.nodes[nodeID], atual.url != nova else { return }
+            self.perform(.nodeUpdate(NodeUpdateOpPayload(
+                id: nodeID, campos: .object(["url": .string(nova)]))), undoable: false)
+        }
+        controller.onTitulo = { [weak self] titulo in
+            guard let self, case .portal(let atual)? = self.nodes[nodeID], atual.titulo != titulo else { return }
+            self.perform(.nodeUpdate(NodeUpdateOpPayload(
+                id: nodeID, campos: .object(["titulo": .string(titulo)]))), undoable: false)
+        }
+        portalControllers[node.id] = controller
+        return controller
+    }
+
     func returnFocusToCanvas() {
         NSApp.keyWindow?.makeFirstResponder(nil)
     }
@@ -212,42 +258,51 @@ final class AppStore: ObservableObject {
     // MARK: - Documento: propor ops
 
     func perform(_ payload: OpPayload, undoable: Bool = true) {
-        guard let ws = workspace else { return }
-        let inverse = undoable ? inverse(of: payload) : nil
-        let op = DocOp(opID: ULID.generate(), author: .humanoLocal, ts: Date(), payload: payload)
-        pendingOpIDs.insert(op.opID)
-        apply(payload)
-        if undoable, let inverse {
-            undoStack.append(UndoEntry(undoOp: inverse, redoOp: payload))
+        performMany([payload], undoable: undoable)
+    }
+
+    /// Vários payloads em UM `doc.apply` — o engine aplica em ordem na mesma request,
+    /// evitando corrida entre Tasks (ex.: substituir conexão = delete + add).
+    func performMany(_ payloads: [OpPayload], undoable: Bool = true) {
+        guard let ws = workspace, !payloads.isEmpty else { return }
+        var ops: [DocOp] = []
+        var inverses: [OpPayload] = []
+        for payload in payloads {
+            if undoable, let inverse = inverse(of: payload) {
+                inverses.append(inverse)
+            }
+            let op = DocOp(opID: ULID.generate(), author: .humanoLocal, ts: Date(), payload: payload)
+            pendingOpIDs.insert(op.opID)
+            apply(payload)
+            ops.append(op)
+        }
+        if undoable, !inverses.isEmpty {
+            undoStack.append(UndoEntry(undoOps: inverses.reversed(), redoOps: payloads))
             redoStack.removeAll()
         }
         Task {
             do {
-                _ = try await connection.call(.docApply, params: DocApplyParams(workspaceID: ws.id, ops: [op]))
+                _ = try await connection.call(.docApply, params: DocApplyParams(workspaceID: ws.id, ops: ops))
             } catch {
-                self.report(error, "doc.apply \(payload.tipo.rawValue)")
+                self.report(error, "doc.apply \(payloads.map(\.tipo.rawValue).joined(separator: ","))")
             }
         }
     }
 
     func undo() {
         guard let entry = undoStack.popLast() else { return }
-        performRaw(entry.undoOp)
+        performMany(entry.undoOps, undoable: false)
         redoStack.append(entry)
     }
 
     func redo() {
         guard let entry = redoStack.popLast() else { return }
-        performRaw(entry.redoOp)
+        performMany(entry.redoOps, undoable: false)
         undoStack.append(entry)
     }
 
     var canUndo: Bool { !undoStack.isEmpty }
     var canRedo: Bool { !redoStack.isEmpty }
-
-    private func performRaw(_ payload: OpPayload) {
-        perform(payload, undoable: false)
-    }
 
     /// Inversa calculada do estado corrente ANTES de aplicar (§7.3).
     private func inverse(of payload: OpPayload) -> OpPayload? {
@@ -306,6 +361,7 @@ final class AppStore: ObservableObject {
         case .nodeDelete(let p):
             nodes[p.id] = nil
             if selection == p.id { selection = nil }
+            portalControllers.removeValue(forKey: p.id) // solta o WKWebView
         case .connectionAdd(let p):
             connections[p.connection.id] = p.connection
         case .connectionDelete(let p):
@@ -332,6 +388,7 @@ final class AppStore: ObservableObject {
         case .terminal(var n): n.posicao = posicao; return .terminal(n)
         case .nota(var n): n.posicao = posicao; return .nota(n)
         case .desenho(var n): n.posicao = posicao; return .desenho(n)
+        case .portal(var n): n.posicao = posicao; return .portal(n)
         }
     }
 
@@ -340,6 +397,7 @@ final class AppStore: ObservableObject {
         case .terminal(var n): n.tamanho = tamanho; return .terminal(n)
         case .nota(var n): n.tamanho = tamanho; return .nota(n)
         case .desenho(var n): n.tamanho = tamanho; return .desenho(n)
+        case .portal(var n): n.tamanho = tamanho; return .portal(n)
         }
     }
 
@@ -358,12 +416,125 @@ final class AppStore: ObservableObject {
 
     func moveNode(_ id: ULID, to posicao: Ponto) {
         guard nodes[id] != nil else { return }
+        guard CanvasMath.posicaoSana(posicao) else {
+            Self.log.error("node.move rejeitado: posição insana (\(posicao.x), \(posicao.y)) para \(id.string)")
+            return
+        }
         perform(.nodeMove(NodeMoveOpPayload(id: id, posicao: posicao)))
     }
 
     func resizeNode(_ id: ULID, to tamanho: Tamanho) {
         guard nodes[id] != nil else { return }
+        guard tamanho.w.isFinite, tamanho.h.isFinite,
+              tamanho.w <= CanvasMath.limitePosicao, tamanho.h <= CanvasMath.limitePosicao else {
+            Self.log.error("node.resize rejeitado: tamanho insano (\(tamanho.w), \(tamanho.h)) para \(id.string)")
+            return
+        }
         perform(.nodeResize(NodeResizeOpPayload(id: id, tamanho: tamanho)))
+    }
+
+    // MARK: - Drag de nó (base + translação; ecos ignorados durante o gesto)
+
+    func beginNodeDrag(_ id: ULID) {
+        guard let node = nodes[id] else { return }
+        draggingNodeID = id
+        dragBase = node.posicao
+        selection = id
+    }
+
+    var nodeDragBase: Ponto? { dragBase }
+
+    /// Atualização local (sem op) durante o gesto — conexões e minimapa seguem o nó.
+    func dragNode(_ id: ULID, to posicao: Ponto) {
+        guard draggingNodeID == id, CanvasMath.posicaoSana(posicao) else { return }
+        nodes[id] = nodes[id].map { mutatePosicao($0, posicao) }
+    }
+
+    func endNodeDrag(_ id: ULID, at posicao: Ponto) {
+        guard draggingNodeID == id else { return }
+        let base = dragBase
+        draggingNodeID = nil
+        dragBase = nil
+        guard let base else { return }
+        nodes[id] = nodes[id].map { mutatePosicao($0, base) }
+        guard CanvasMath.posicaoSana(posicao) else {
+            Self.log.error("drag descartado: destino insano (\(posicao.x), \(posicao.y)) para \(id.string)")
+            return
+        }
+        perform(.nodeMove(NodeMoveOpPayload(id: id, posicao: posicao)))
+    }
+
+    func cancelNodeDrag() {
+        guard let id = draggingNodeID, let base = dragBase else {
+            draggingNodeID = nil
+            dragBase = nil
+            return
+        }
+        draggingNodeID = nil
+        dragBase = nil
+        nodes[id] = nodes[id].map { mutatePosicao($0, base) }
+    }
+
+    // MARK: - Conexões pela UI (§5.3)
+
+    func connect(from origem: ULID, to destino: ULID) {
+        guard origem != destino, let a = nodes[origem], let b = nodes[destino] else { return }
+        let semantica: ConnectionSemantica
+        switch (a.tipo, b.tipo) {
+        case (.terminal, .nota): semantica = .escritaDeNota
+        case (.terminal, .terminal): semantica = .conversa
+        default: semantica = .visual
+        }
+        let jaExiste = connections.values.contains {
+            $0.semantica == semantica &&
+                (($0.de == origem && $0.para == destino) ||
+                    (semantica == .conversa && $0.de == destino && $0.para == origem))
+        }
+        if jaExiste {
+            aviso("\(nodeName(origem)) e \(nodeName(destino)) já estão conectados")
+            return
+        }
+        var ops: [OpPayload] = []
+        if semantica == .escritaDeNota,
+           let anterior = connections.values.first(where: { $0.semantica == .escritaDeNota && $0.de == origem }) {
+            ops.append(.connectionDelete(ConnectionDeleteOpPayload(id: anterior.id)))
+            aviso("conexão de nota de \(nodeName(origem)) substituída")
+        } else if semantica == .escritaDeNota {
+            aviso("\(nodeName(origem)) agora escreve nesta nota (colmeia note)")
+        }
+        let estilo: ConnectionEstilo = semantica == .escritaDeNota ? .solida : .tracejada
+        ops.append(.connectionAdd(ConnectionAddOpPayload(connection: Connection(
+            id: ULID.generate(), de: origem, para: destino, semantica: semantica, estilo: estilo
+        ))))
+        performMany(ops)
+    }
+
+    func deleteConnection(_ id: ULID) {
+        guard connections[id] != nil else { return }
+        if connectionSelection == id { connectionSelection = nil }
+        perform(.connectionDelete(ConnectionDeleteOpPayload(id: id)))
+    }
+
+    /// Alvo do drop: nó de maior z cujo retângulo (mundo) contém o ponto.
+    func node(atWorldPoint ponto: Ponto, excluindo: ULID? = nil) -> ULID? {
+        nodes.values
+            .filter { node in
+                node.id != excluindo &&
+                    CGRect(x: node.posicao.x, y: node.posicao.y, width: node.tamanho.w, height: node.tamanho.h)
+                    .contains(CGPoint(x: ponto.x, y: ponto.y))
+            }
+            .max { ($0.z, $0.id.string) < ($1.z, $1.id.string) }?
+            .id
+    }
+
+    func aviso(_ texto: String) {
+        avisoInfo = texto
+        avisoTask?.cancel()
+        avisoTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.avisoInfo = nil
+        }
     }
 
     /// `node.delete` de terminal com sessão viva falha no engine (§7.2); a UI
@@ -408,6 +579,39 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Um passo (§5.2.1): nó no centro da viewport + sessão na hora, com defaults.
+    func quickStartTerminal(adapter: String) async {
+        guard let ws = workspace else { return }
+        await addTerminal(
+            nome: nomeAutomatico(adapter: adapter),
+            papel: nil,
+            adapter: adapter,
+            comandoOverride: nil,
+            cwd: ws.caminhoRaiz ?? FileManager.default.homeDirectoryForCurrentUser.path,
+            monitorarAtividade: true
+        )
+    }
+
+    /// "claude-1", "shell-2"… único no workspace, case-insensitive (§5.2.1).
+    func nomeAutomatico(adapter: String) -> String {
+        let base: String
+        switch KnownAdapter(rawValue: adapter) {
+        case .claudeCode: base = "claude"
+        case .codex: base = "codex"
+        case .geminiCli: base = "gemini"
+        case .opencode: base = "opencode"
+        case .shell: base = "shell"
+        case .none: base = adapter.lowercased()
+        }
+        let usados = Set(nodes.values.compactMap { node -> String? in
+            if case .terminal(let t) = node { return t.nome.lowercased() }
+            return nil
+        })
+        var n = 1
+        while usados.contains("\(base)-\(n)") { n += 1 }
+        return "\(base)-\(n)"
+    }
+
     func addNota() {
         guard workspace != nil else { return }
         let id = ULID.generate()
@@ -422,6 +626,25 @@ final class AppStore: ObservableObject {
         )
         perform(.nodeAdd(NodeAddOpPayload(node: .nota(node))))
         selection = id
+    }
+
+    /// Novo portal no centro da viewport. URL vazia/ilegível → about:blank (a view
+    /// põe o foco na barra de URL). Criação pela UI é `node.add` comum — o método
+    /// `portal.open` (validação http/https) é a via de CLI/agentes.
+    func addPortal(url bruto: String?) {
+        guard workspace != nil else { return }
+        let url = bruto.flatMap(PortalURL.normalizar) ?? "about:blank"
+        let tamanho = Tamanho(w: 720, h: 520)
+        let node = PortalNode(
+            id: ULID.generate(),
+            posicao: centerPosition(for: tamanho),
+            tamanho: tamanho,
+            z: nextZ(),
+            criadoEm: Date(),
+            url: url
+        )
+        perform(.nodeAdd(NodeAddOpPayload(node: .portal(node))))
+        selection = node.id
     }
 
     func relaunch(nodeID: ULID) async {
@@ -670,6 +893,13 @@ final class AppStore: ObservableObject {
                   payload.workspaceID == workspace?.id else { return }
             if pendingOpIDs.remove(payload.op.opID) != nil { return }
             if case .viewportSet = payload.op.payload { return }
+            if case .nodeMove(let move) = payload.op.payload {
+                if move.id == draggingNodeID { return }
+                guard CanvasMath.posicaoSana(move.posicao) else {
+                    Self.log.error("eco node.move ignorado: posição insana para \(move.id.string)")
+                    return
+                }
+            }
             apply(payload.op.payload)
         case .approvalCreated:
             guard let payload = try? event.decodeParams(ApprovalTopicPayload.self) else { return }

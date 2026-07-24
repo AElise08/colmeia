@@ -87,9 +87,11 @@ struct ProtocolTests {
     }
 
     @Test func inventarioDeMetodos() {
-        #expect(ColmeiaMethod.allCases.count == 35)
+        // 35 da §6.4 + portal.open ([v1.5] antecipado, extensão forward-compatible §0)
+        #expect(ColmeiaMethod.allCases.count == 36)
         #expect(ColmeiaMethod(rawValue: "routine.run_now") == .routineRunNow)
         #expect(ColmeiaMethod(rawValue: "doc.apply") == .docApply)
+        #expect(ColmeiaMethod(rawValue: "portal.open") == .portalOpen)
     }
 
     @Test func topicos() {
@@ -135,6 +137,32 @@ struct DomainTests {
         #expect(texto.contains(#""monitorar_atividade":true"#))
         let roundtrip = try SocketFraming.decodeLine(Node.self, from: data)
         #expect(roundtrip == node)
+    }
+
+    @Test func portalNodeDiscriminadoPorTipo() throws {
+        // [v1.5 antecipado] — decode de portal deixou de ser rejeitado
+        let portal = PortalNode(
+            id: ULID.generate(),
+            posicao: Ponto(x: 120, y: 120),
+            tamanho: Tamanho(w: 720, h: 520),
+            criadoEm: ts,
+            url: "https://example.com",
+            titulo: "Exemplo"
+        )
+        let node = Node.portal(portal)
+        let data = try SocketFraming.encodeLine(node)
+        let texto = String(decoding: data, as: UTF8.self)
+        #expect(texto.contains(#""tipo":"portal""#))
+        #expect(texto.contains(#""url":"https:\/\/example.com""# ) || texto.contains(#""url":"https://example.com""#))
+        let roundtrip = try SocketFraming.decodeLine(Node.self, from: data)
+        #expect(roundtrip == node)
+        #expect(roundtrip.tipo == .portal)
+        // titulo é opcional
+        let semTitulo = Node.portal(PortalNode(
+            id: ULID.generate(), posicao: Ponto(x: 0, y: 0), tamanho: Tamanho(w: 300, h: 200),
+            criadoEm: ts, url: "about:blank"))
+        let roundtrip2 = try SocketFraming.decodeLine(Node.self, from: SocketFraming.encodeLine(semTitulo))
+        #expect(roundtrip2 == semTitulo)
     }
 
     @Test func opComTipoDaSpec() throws {

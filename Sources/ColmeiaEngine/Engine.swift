@@ -507,6 +507,9 @@ public final class Engine: @unchecked Sendable {
             case .noteAppend:
                 let params = try request.decodeParams(NoteAppendParams.self)
                 respondEncodable(client, id: request.id, try handleNoteAppend(params, author: client.author))
+            case .portalOpen:
+                let params = try request.decodeParams(PortalOpenParams.self)
+                respondEncodable(client, id: request.id, try handlePortalOpen(params, author: client.author))
             case .routineCreate:
                 let params = try request.decodeParams(RoutineCreateParams.self)
                 respondEncodable(client, id: request.id, RoutineResult(routine: try handleRoutineCreate(params)))
@@ -1284,6 +1287,43 @@ public final class Engine: @unchecked Sendable {
         broadcast(.noteAppended, ws: params.workspaceID, NoteAppendedTopicPayload(
             nodeID: notaID, fonte: author, resumo: resumo))
         return NoteAppendResult(notaNodeID: notaID)
+    }
+
+    // MARK: - Portais ([v1.5] antecipado)
+
+    /// `portal.open`: valida a URL (http/https com host; senão `invalid_params`) e cria
+    /// o PortalNode pelo MESMO caminho de `doc.apply` (§7.1) — clientes veem o `node.add`
+    /// pelo eco `document.op` normalmente. Posição: definida-pela-implementação —
+    /// cascata simples a partir de (120,120) com passo de 40 px por nó existente.
+    private func handlePortalOpen(_ params: PortalOpenParams, author: Author) throws -> PortalOpenResult {
+        let state = try requireWorkspace(params.workspaceID)
+        guard let componentes = URLComponents(string: params.url),
+              let scheme = componentes.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = componentes.host, !host.isEmpty
+        else {
+            throw ProtocolError(
+                name: .invalid_params,
+                message: "portal.open exige URL http/https absoluta; recebeu \"\(params.url)\"")
+        }
+        let passo = Double(state.nodes.count % 12) * 40
+        let node = PortalNode(
+            id: ULID.generate(),
+            posicao: Ponto(x: 120 + passo, y: 120 + passo),
+            tamanho: Tamanho(w: 720, h: 520),
+            z: (state.nodes.values.map(\.z).max() ?? 0) + 1,
+            criadoEm: Date(),
+            url: params.url,
+            titulo: params.nome)
+        let op = DocOp(
+            opID: ULID.generate(), author: author, ts: Date(),
+            payload: .nodeAdd(NodeAddOpPayload(node: .portal(node))))
+        let applied = try state.applyProposal(op, liveNodeIDs: liveNodeIDs)
+        broadcast(.documentOp, ws: params.workspaceID, DocumentOpTopicPayload(
+            workspaceID: params.workspaceID, op: applied, seq: applied.seq ?? 0))
+        try? state.saveWorkspace()
+        log.info("portal_open", params.url, workspaceID: params.workspaceID)
+        return PortalOpenResult(nodeID: node.id)
     }
 
     // MARK: - Rotinas (§17, §24.4)

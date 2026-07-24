@@ -170,6 +170,40 @@ struct DocumentStoreTests {
         #expect(FileManager.default.fileExists(atPath: docURL.appendingPathExtension("quarantine").path))
     }
 
+    @Test func portalPersisteEReconstroiDoDisco() throws {
+        // [v1.5 antecipado] — node.add/move/update/delete de portal como qualquer nó;
+        // regressão: o decode de `tipo: portal` era rejeitado na v1.
+        let root = tempRoot()
+        let state = try makeState(root)
+        let portal = PortalNode(
+            id: ULID.generate(), posicao: Ponto(x: 100, y: 100),
+            tamanho: Tamanho(w: 720, h: 520), criadoEm: Date(),
+            url: "https://example.com", titulo: "Exemplo")
+        _ = try state.applyProposal(proposal(.nodeAdd(NodeAddOpPayload(node: .portal(portal)))), liveNodeIDs: [])
+        _ = try state.applyProposal(
+            proposal(.nodeMove(NodeMoveOpPayload(id: portal.id, posicao: Ponto(x: 300, y: 40)))), liveNodeIDs: [])
+        // navegar = node.update {url} comum (§7.2)
+        let update = try state.applyProposal(
+            proposal(.nodeUpdate(NodeUpdateOpPayload(
+                id: portal.id, campos: .object(["url": .string("https://example.org/docs")])))),
+            liveNodeIDs: [])
+        #expect(update.anterior?["campos"]?["url"]?.stringValue == "https://example.com")
+
+        let reloaded = try makeState2(root, workspace: state.workspace)
+        guard case .portal(let relido)? = reloaded.nodes[portal.id] else {
+            Issue.record("portal deveria reconstruir do document.jsonl")
+            return
+        }
+        #expect(relido.url == "https://example.org/docs")
+        #expect(relido.posicao == Ponto(x: 300, y: 40))
+        #expect(relido.titulo == "Exemplo")
+
+        // delete funciona (portal nunca tem sessão viva)
+        _ = try reloaded.applyProposal(
+            proposal(.nodeDelete(NodeDeleteOpPayload(id: portal.id))), liveNodeIDs: [])
+        #expect(reloaded.nodes[portal.id] == nil)
+    }
+
     @Test func undoRestauraEstadoExato() throws {
         // 25.7.3 — a inversão usa payload.anterior ecoado pelo engine
         let state = try makeState(tempRoot())
@@ -509,6 +543,78 @@ struct EngineSocketTests {
             .routineList, params: RoutineListParams(workspaceID: wsID), expecting: [Routine].self)
         #expect(list.first?.habilitada == false)
         #expect(list.first?.ultimaExecucao?.resultado == .puladaAlvoAusente)
+        client.close()
+    }
+
+    @Test func portalOpenValidaURLECriaNodePeloCaminhoDeDoc() async throws {
+        let (engine, client, root) = try boot()
+        defer { engine.stop() }
+        _ = try await client.hello(client: "test")
+        let created = try await client.call(
+            .workspaceCreate, params: WorkspaceCreateParams(nome: "web"), expecting: WorkspaceResult.self)
+        let wsID = created.workspace.id
+        _ = try await client.call(
+            .subscribe, params: SubscribeParams(topics: [.documentOp], workspaceID: wsID))
+
+        // http/https apenas — o resto é invalid_params (§6.6)
+        for ruim in ["ftp://x.com/a", "file:///etc/passwd", "javascript:alert(1)", "não é url", "https://", "example.com"] {
+            do {
+                _ = try await client.call(.portalOpen, params: PortalOpenParams(workspaceID: wsID, url: ruim))
+                Issue.record("portal.open deveria rejeitar: \(ruim)")
+            } catch let error as ProtocolError {
+                #expect(error.known == .invalid_params, "URL \(ruim)")
+            }
+        }
+
+        let opened = try await client.call(
+            .portalOpen,
+            params: PortalOpenParams(workspaceID: wsID, url: "https://example.com", nome: "Docs"),
+            expecting: PortalOpenResult.self)
+
+        // o node.add chega aos assinantes pelo tópico document.op normalmente
+        var ecoOK = false
+        let deadline = Date().addingTimeInterval(5)
+        for await event in client.events {
+            if event.knownTopic == .documentOp,
+               let payload = try? event.decodeParams(DocumentOpTopicPayload.self),
+               case .nodeAdd(let add) = payload.op.payload,
+               case .portal(let portal) = add.node {
+                #expect(portal.id == opened.nodeID)
+                #expect(portal.url == "https://example.com")
+                #expect(portal.titulo == "Docs")
+                ecoOK = true
+                break
+            }
+            if Date() > deadline { break }
+        }
+        #expect(ecoOK)
+
+        // navegar portal existente = node.update {url} comum, sem método novo
+        _ = try await client.call(.docApply, params: DocApplyParams(workspaceID: wsID, ops: [
+            proposal(.nodeUpdate(NodeUpdateOpPayload(
+                id: opened.nodeID, campos: .object(["url": .string("https://example.org/docs")])))),
+        ]))
+        let snap = try await client.call(
+            .docSnapshot, params: DocSnapshotParams(workspaceID: wsID), expecting: DocSnapshotResult.self)
+        guard case .portal(let portal)? = snap.documentSnapshot.nodes.first(where: { $0.id == opened.nodeID }) else {
+            Issue.record("snapshot deveria conter o portal")
+            return
+        }
+        #expect(portal.url == "https://example.org/docs")
+
+        // workspace inexistente → workspace_not_found
+        do {
+            _ = try await client.call(
+                .portalOpen, params: PortalOpenParams(workspaceID: ULID.generate(), url: "https://example.com"))
+            Issue.record("deveria falhar")
+        } catch let error as ProtocolError {
+            #expect(error.known == .workspace_not_found)
+        }
+
+        // a op persistiu no document.jsonl com o discriminador portal
+        let docURL = ColmeiaPaths(root: root).documentFile(wsID)
+        let texto = try String(contentsOf: docURL, encoding: .utf8)
+        #expect(texto.contains(#""tipo":"portal""#))
         client.close()
     }
 

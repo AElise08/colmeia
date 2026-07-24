@@ -11,6 +11,7 @@ subcomandos:
   \(AskCommand.usage)
   \(NoteCommand.usage)
   \(StatusCommand.usage)
+  colmeia portal open <url> [--nome <apelido>] [--workspace <workspace-id>]
   colmeia version | --version
   colmeia help    | --help
 """
@@ -34,9 +35,11 @@ case "note":
     exitCode = await NoteCommand.run(Array(cliArguments.dropFirst()))
 case "status":
     exitCode = await StatusCommand.run(Array(cliArguments.dropFirst()))
-case "portal", "handoff":
-    // §13.5 — nomes reservados ([v1.5]/[FASE 2]); NÃO DEVEM ser usados para outra coisa.
-    printErr("colmeia \(cliArguments[0]): nome reservado (§13.5), ainda não disponível nesta versão")
+case "portal":
+    exitCode = await PortalCommand.run(Array(cliArguments.dropFirst()))
+case "handoff":
+    // §13.5 — nome reservado [FASE 2]; NÃO DEVE ser usado para outra coisa.
+    printErr("colmeia handoff: nome reservado (§13.5), ainda não disponível nesta versão")
     exitCode = CLIExit.uso
 case .some(let outro):
     printErr("subcomando desconhecido: \(outro)\n\n\(cliUsage)")

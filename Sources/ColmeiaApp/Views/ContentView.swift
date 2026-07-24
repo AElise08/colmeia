@@ -43,17 +43,20 @@ struct ContentView: View {
         }
     }
 
+    /// A janela aparece imediatamente; conectar/abrir workspace é assíncrono (§21.1).
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "hexagon")
                 .font(.system(size: 42))
                 .foregroundStyle(.secondary)
-            Text("Nenhum workspace aberto")
-                .font(.title3)
             if connection.isConnected {
+                Text("Nenhum workspace aberto")
+                    .font(.title3)
                 WorkspaceSelectorMenu()
             } else {
-                Text("aguardando o engine…")
+                ProgressView()
+                    .controlSize(.small)
+                Text("conectando ao engine…")
                     .foregroundStyle(.secondary)
             }
         }
@@ -64,6 +67,13 @@ struct ContentView: View {
         VStack(alignment: .trailing, spacing: 8) {
             if case .reconectando(let tentativa) = connection.status {
                 Label("reconectando (\(tentativa))", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.thinMaterial, in: Capsule())
+            }
+            if let aviso = store.avisoInfo {
+                Text(aviso)
                     .font(.caption)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
@@ -96,8 +106,22 @@ struct ContentView: View {
             WorkspaceSelectorMenu()
         }
         ToolbarItemGroup {
-            Button {
-                store.showNewTerminal = true
+            // Um passo: clicar no quick-start já cria o nó e lança a sessão;
+            // o diálogo completo virou "Opções avançadas…".
+            Menu {
+                ForEach(NewTerminalSheet.quickStarts) { qs in
+                    Button {
+                        Task { await store.quickStartTerminal(adapter: qs.id) }
+                    } label: {
+                        Label(qs.nome, systemImage: qs.icone)
+                    }
+                }
+                Divider()
+                Button {
+                    store.showNewTerminal = true
+                } label: {
+                    Label("Opções avançadas…", systemImage: "slider.horizontal.3")
+                }
             } label: {
                 Label("Novo Terminal", systemImage: "terminal")
             }
@@ -109,6 +133,16 @@ struct ContentView: View {
                 Label("Nova Nota", systemImage: "note.text.badge.plus")
             }
             .disabled(store.workspace == nil)
+
+            Button {
+                store.showNewPortal.toggle()
+            } label: {
+                Label("Novo Portal", systemImage: "globe")
+            }
+            .disabled(store.workspace == nil)
+            .popover(isPresented: $store.showNewPortal, arrowEdge: .bottom) {
+                NewPortalPopover()
+            }
 
             approvalsButton
         }

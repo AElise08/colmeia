@@ -74,6 +74,7 @@ final class EngineConnection: ObservableObject {
 
     private func runLoop() async {
         var tentativa = 0
+        var jaConectou = false
         while !Task.isCancelled {
             let candidate = SocketClient()
             do {
@@ -81,6 +82,7 @@ final class EngineConnection: ObservableObject {
                 _ = try await candidate.hello(client: "canvas-ui")
                 client = candidate
                 tentativa = 0
+                jaConectou = true
                 engineLaunched = false
                 status = .conectado
                 await onConnected?()
@@ -93,11 +95,19 @@ final class EngineConnection: ObservableObject {
             client = nil
             if Task.isCancelled { break }
             tentativa += 1
-            status = .reconectando(tentativa: tentativa)
             if !engineLaunched {
                 engineLaunched = launchEngine()
             }
-            let delay = min(30.0, pow(2.0, Double(tentativa - 1)))
+            let delay: Double
+            if jaConectou {
+                status = .reconectando(tentativa: tentativa)
+                delay = min(30.0, pow(2.0, Double(tentativa - 1)))
+            } else {
+                // Cold start (§21.1): o engine recém-lançado sobe em <1s — tentar
+                // rápido; o backoff 1s→30s (§22.5) é só para RE-conexão.
+                status = .conectando
+                delay = tentativa < 20 ? 0.25 : 1.0
+            }
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
     }

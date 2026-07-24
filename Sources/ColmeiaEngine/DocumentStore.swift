@@ -274,6 +274,7 @@ final class WorkspaceState {
             case .terminal(var terminal): terminal.posicao = payload.posicao; node = .terminal(terminal)
             case .nota(var nota): nota.posicao = payload.posicao; node = .nota(nota)
             case .desenho(var desenho): desenho.posicao = payload.posicao; node = .desenho(desenho)
+            case .portal(var portal): portal.posicao = payload.posicao; node = .portal(portal)
             }
             nodes[payload.id] = node
         case .nodeResize(let payload):
@@ -282,6 +283,7 @@ final class WorkspaceState {
             case .terminal(var terminal): terminal.tamanho = payload.tamanho; node = .terminal(terminal)
             case .nota(var nota): nota.tamanho = payload.tamanho; node = .nota(nota)
             case .desenho(var desenho): desenho.tamanho = payload.tamanho; node = .desenho(desenho)
+            case .portal(var portal): portal.tamanho = payload.tamanho; node = .portal(portal)
             }
             nodes[payload.id] = node
         case .nodeUpdate(let payload):
