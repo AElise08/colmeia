@@ -1,656 +1,140 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Colmeia — Canvas local para pessoas e agentes de IA</title>
-<meta name="description" content="Colmeia é um canvas local-first para coordenar trabalho entre humanos e agentes de IA. Terminais, notas, portais, tudo num espaço visual.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐝</text></svg>">
-<style>
-:root {
-  --bg: #0f0d08;
-  --bg2: #1a150c;
-  --bg3: #241e10;
-  --gold: #f7b928;
-  --gold-light: #ffe29a;
-  --gold-dark: #cf7415;
-  --text: #f5edd6;
-  --text-secondary: #a89878;
-  --border: #2a2212;
-}
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Colmeia e um canvas local-first para coordenar pessoas e agentes de IA.">
+  <title>Colmeia - A sala de controle para agentes</title>
+  <style>
+    :root {
+      --ink: #15130f;
+      --coal: #201c14;
+      --paper: #f1ead8;
+      --muted: #aaa18b;
+      --line: rgba(241, 234, 216, .16);
+      --honey: #f3bb35;
+      --amber: #d48223;
+      --hive: #fff3ca;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; overflow-x: hidden; background: var(--ink); color: var(--paper); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: inherit; }
+    button { font: inherit; }
+    .lang { display: none; }
+    .lang.active { display: inline; }
+    .lang.block.active { display: block; }
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+    .shell { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
+    .nav-wrap { position: absolute; top: 0; left: 0; right: 0; z-index: 5; }
+    nav { height: 80px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-family: Georgia, "Times New Roman", serif; font-size: 24px; font-weight: 700; letter-spacing: -.04em; }
+    .brand-mark { position: relative; width: 21px; height: 24px; border: 2px solid var(--honey); clip-path: polygon(50% 0, 94% 25%, 94% 75%, 50% 100%, 6% 75%, 6% 25%); }
+    .nav-links { display: flex; align-items: center; gap: 26px; color: var(--muted); font-size: 13px; }
+    .nav-links a { text-decoration: none; }
+    .nav-links a:hover { color: var(--paper); }
+    .language { display: flex; padding: 3px; border: 1px solid var(--line); border-radius: 999px; gap: 2px; }
+    .language button { padding: 5px 9px; border: 0; border-radius: 999px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; font-weight: 700; }
+    .language button.active { color: var(--ink); background: var(--honey); }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-}
+    .hero { position: relative; overflow: hidden; padding: 174px 0 104px; background: radial-gradient(circle at 78% 7%, rgba(243, 187, 53, .16), transparent 28%), radial-gradient(circle at 13% 45%, rgba(212, 130, 35, .11), transparent 35%), var(--ink); }
+    .hero:before { content: ""; position: absolute; width: 860px; height: 860px; top: 130px; right: -440px; border: 1px solid rgba(243, 187, 53, .12); border-radius: 50%; box-shadow: 0 0 0 80px rgba(243, 187, 53, .025), 0 0 0 160px rgba(243, 187, 53, .018); }
+    .hero-copy { position: relative; z-index: 1; max-width: 710px; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 20px; color: var(--honey); font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    .eyebrow:before { content: ""; width: 26px; height: 1px; background: var(--honey); }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 760px; margin-bottom: 22px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(50px, 7.2vw, 92px); font-weight: 500; letter-spacing: -.075em; line-height: .93; }
+    h1 em { color: var(--honey); font-style: normal; }
+    .hero-copy > p { max-width: 540px; margin-bottom: 32px; color: var(--muted); font-size: 18px; line-height: 1.65; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 48px; padding: 0 20px; border: 1px solid var(--line); border-radius: 6px; text-decoration: none; font-size: 14px; font-weight: 750; transition: transform .2s, background .2s, border-color .2s; }
+    .button:hover { transform: translateY(-2px); }
+    .button.primary { color: var(--ink); border-color: var(--honey); background: var(--honey); }
+    .button.secondary { color: var(--paper); background: rgba(255,255,255,.03); }
+    .button.secondary:hover { border-color: rgba(243, 187, 53, .65); }
+    .meta { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 25px; color: #817862; font-size: 12px; }
+    .meta span:before { content: ""; display: inline-block; width: 5px; height: 5px; margin: 0 8px 2px 0; border-radius: 50%; background: var(--honey); }
 
-h1, h2, h3, h4 { font-weight: 700; line-height: 1.2; }
+    .scene { position: relative; z-index: 1; width: min(1120px, 100%); height: 512px; margin: 86px auto 0; overflow: hidden; border: 1px solid rgba(243, 187, 53, .32); border-radius: 11px; background: linear-gradient(rgba(243, 187, 53, .055) 1px, transparent 1px), linear-gradient(90deg, rgba(243, 187, 53, .055) 1px, transparent 1px), #19160f; background-size: 32px 32px; box-shadow: 0 34px 90px rgba(0,0,0,.45); }
+    .scene-top { position: absolute; z-index: 3; inset: 0 0 auto; height: 46px; display: flex; align-items: center; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(20,18,13,.86); color: #a79b7c; font-size: 11px; }
+    .traffic { display: flex; gap: 6px; margin-right: 15px; }
+    .traffic i { width: 8px; height: 8px; border-radius: 50%; background: #6b5a32; }
+    .traffic i:first-child { background: #cf6d3f; }.traffic i:nth-child(2) { background: #d6a337; }.traffic i:last-child { background: #73904a; }
+    .scene-top b { color: var(--paper); font-weight: 650; }.scene-top .status { margin-left: auto; color: #8fa968; }
+    .side-panel { position: absolute; z-index: 2; top: 46px; bottom: 0; left: 0; width: 171px; padding: 21px 14px; border-right: 1px solid var(--line); background: rgba(25,22,15,.76); }
+    .side-title { margin: 0 0 14px; color: #776c54; font-size: 9px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    .side-item { display: flex; align-items: center; gap: 8px; margin: 4px 0; padding: 8px; border-radius: 5px; color: #bdb39a; font-size: 11px; }
+    .side-item.active { color: var(--hive); background: rgba(243, 187, 53, .12); }.side-item i { width: 7px; height: 7px; border: 1px solid var(--honey); border-radius: 50%; }.side-item.active i { background: var(--honey); box-shadow: 0 0 8px var(--honey); }
+    .connector { position: absolute; z-index: 0; height: 1px; transform-origin: left center; background: linear-gradient(90deg, rgba(243, 187, 53, .3), var(--honey), rgba(243,187,53,.15)); }.connector:after { content: ""; position: absolute; right: -3px; top: -2px; width: 5px; height: 5px; border-radius: 50%; background: var(--honey); box-shadow: 0 0 12px var(--honey); }
+    .connect-one { width: 295px; top: 212px; left: 325px; transform: rotate(19deg); }.connect-two { width: 273px; top: 279px; left: 545px; transform: rotate(-21deg); }.connect-three { width: 276px; top: 366px; left: 352px; transform: rotate(-4deg); }
+    .node { position: absolute; z-index: 1; border: 1px solid #59471e; border-radius: 8px; background: #201b11; box-shadow: 0 18px 30px rgba(0,0,0,.26); }.node-bar { display: flex; align-items: center; gap: 7px; height: 31px; padding: 0 10px; border-bottom: 1px solid rgba(241,234,216,.10); color: #e8d8a5; font-size: 10px; font-weight: 720; }.node-bar i { width: 7px; height: 7px; border-radius: 50%; background: #76a04d; box-shadow: 0 0 9px rgba(118,160,77,.8); }.node-bar .node-kind { margin-left: auto; color: #867950; font-size: 9px; font-weight: 500; }.terminal { top: 113px; left: 216px; width: 260px; }.terminal-body { min-height: 117px; padding: 11px; color: #bdaf8b; font: 10px/1.75 "SF Mono", "Cascadia Code", monospace; }.terminal-body .prompt { color: var(--honey); }.terminal-body .reply { color: #aeca7d; }.terminal.queen { top: 277px; left: 255px; width: 275px; }.portal { top: 125px; right: 71px; width: 255px; }.portal-page { height: 113px; padding: 16px; background: linear-gradient(135deg, #eee7d4, #d7ceb5); color: #3b3321; }.portal-url { width: 100%; margin-bottom: 15px; padding: 5px 7px; border: 1px solid #b3a47f; border-radius: 3px; color: #76694d; font: 8px "SF Mono", monospace; background: #fbf8ef; }.portal-page strong { font-family: Georgia, serif; font-size: 16px; }.portal-page p { margin: 4px 0; color: #75684c; font-size: 8px; }.portal-page button { padding: 4px 7px; border: 0; border-radius: 2px; color: #fff5d9; background: #8c6d26; font-size: 8px; }.note { right: 253px; bottom: 51px; width: 190px; padding: 14px 15px; border: 0; border-radius: 2px; color: #382911; background: #d9a62e; transform: rotate(-3deg); box-shadow: 0 15px 25px rgba(0,0,0,.2); }.note b { display: block; margin-bottom: 6px; font-size: 11px; }.note p { margin: 0; font: 9px/1.7 "SF Mono", monospace; }.scene-foot { position: absolute; z-index: 2; right: 14px; bottom: 13px; color: #766a4d; font: 10px "SF Mono", monospace; }
 
-/* ---- Language toggle ---- */
-.lang-toggle {
-  position: fixed;
-  top: 20px;
-  right: 24px;
-  z-index: 100;
-  display: flex;
-  gap: 0;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-.lang-toggle button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  padding: 6px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all .2s;
-}
-.lang-toggle button.active { background: var(--gold); color: #0f0d08; }
-.lang-toggle button:hover:not(.active) { color: var(--text); }
+    section { padding: 116px 0; }.section-heading { display: grid; grid-template-columns: 1fr 1.25fr; gap: 56px; align-items: end; margin-bottom: 46px; }.section-heading > * { min-width: 0; }.kicker { margin-bottom: 10px; color: var(--honey); font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }.section-heading h2 { max-width: 510px; margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: clamp(36px, 4.3vw, 58px); font-weight: 500; letter-spacing: -.055em; line-height: .98; }.section-heading p { max-width: 515px; margin: 0; color: var(--muted); font-size: 16px; line-height: 1.7; }
+    .editorial { overflow: hidden; background: var(--paper); color: var(--ink); }.editorial .kicker { color: #9c641a; }.editorial .section-heading p { color: #746b59; }.editorial .pill { color: #806a3c; border-color: #d4c39c; }.contrast { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; overflow: hidden; border: 1px solid #d8c8a2; border-radius: 8px; background: #d8c8a2; }.contrast-panel { min-height: 305px; padding: 31px; background: #f8f2e4; }.contrast-panel.dark { color: var(--paper); background: var(--coal); }.contrast-panel .number { color: #a98034; font: 11px "SF Mono", monospace; }.contrast-panel h3 { max-width: 310px; margin: 40px 0 13px; font-family: Georgia, serif; font-size: 30px; font-weight: 500; letter-spacing: -.045em; line-height: 1; }.contrast-panel p { max-width: 335px; margin: 0; color: #746b59; font-size: 14px; line-height: 1.65; }.contrast-panel.dark p { color: #b1a58a; }.tab-stack { display: grid; gap: 8px; margin-top: 29px; }.tab { padding: 9px 11px; border: 1px solid #ded2b5; border-radius: 4px; color: #8b8069; font: 10px "SF Mono", monospace; background: #fffaf0; }.link-rows { margin-top: 25px; }.link-row { display: flex; align-items: center; gap: 11px; margin-top: 9px; padding: 10px; border: 1px solid rgba(243,187,53,.21); border-radius: 4px; color: #dbc982; font: 10px "SF Mono", monospace; }.link-row i { width: 7px; height: 7px; border-radius: 50%; background: var(--honey); }.link-row i:nth-child(3) { margin-left: auto; background: #8caf5d; }
 
-/* ---- Nav ---- */
-nav {
-  position: fixed;
-  top: 0;
-  width: 100%;
-  z-index: 90;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  background: rgba(15,13,8,.8);
-  border-bottom: 1px solid var(--border);
-  padding: 14px 24px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.nav-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--gold);
-  text-decoration: none;
-}
-.nav-links { display: flex; gap: 24px; align-items: center; }
-.nav-links a {
-  color: var(--text-secondary);
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 500;
-  transition: color .2s;
-}
-.nav-links a:hover { color: var(--gold); }
-.nav-cta {
-  background: var(--gold);
-  color: #0f0d08 !important;
-  padding: 8px 20px;
-  border-radius: 8px;
-  font-weight: 700;
-  font-size: 14px;
-}
-
-/* ---- Hero ---- */
-.hero {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 120px 24px 80px;
-  position: relative;
-  overflow: hidden;
-}
-.hero-bg {
-  position: absolute;
-  inset: 0;
-  opacity: .07;
-  background:
-    radial-gradient(circle at 20% 50%, #f7b928 0, transparent 50%),
-    radial-gradient(circle at 80% 30%, #cf7415 0, transparent 50%),
-    radial-gradient(circle at 50% 80%, #f7b928 0, transparent 40%);
-  z-index: 0;
-}
-.hero-content { position: relative; z-index: 1; max-width: 800px; }
-.hero-icon { font-size: 56px; margin-bottom: 16px; }
-.hero h1 {
-  font-size: clamp(40px, 7vw, 72px);
-  letter-spacing: -2px;
-  margin-bottom: 8px;
-  background: linear-gradient(135deg, var(--gold-light), var(--gold), var(--gold-dark));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-.hero .subtitle {
-  font-size: clamp(18px, 2.5vw, 28px);
-  color: var(--text-secondary);
-  margin-bottom: 32px;
-  font-weight: 400;
-}
-.hero .desc {
-  font-size: 16px;
-  color: var(--text-secondary);
-  max-width: 600px;
-  margin: 0 auto 40px;
-  line-height: 1.7;
-}
-.hero-btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 28px;
-  border-radius: 12px;
-  font-size: 16px;
-  font-weight: 700;
-  text-decoration: none;
-  transition: all .25s;
-  cursor: pointer;
-}
-.btn-primary { background: var(--gold); color: #0f0d08; }
-.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(247,185,40,.25); }
-.btn-secondary { background: var(--bg2); color: var(--text); border: 1px solid var(--border); }
-.btn-secondary:hover { border-color: var(--gold); color: var(--gold); transform: translateY(-2px); }
-
-.hero-oss {
-  margin-top: 48px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-.hero-oss a { color: var(--gold); text-decoration: none; }
-.hero-oss a:hover { text-decoration: underline; }
-
-/* ---- Sections ---- */
-section { padding: 100px 24px; }
-.section-inner { max-width: 1100px; margin: 0 auto; }
-.section-label {
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 3px;
-  color: var(--gold);
-  font-weight: 700;
-  margin-bottom: 8px;
-}
-.section-title {
-  font-size: clamp(28px, 4vw, 44px);
-  margin-bottom: 12px;
-}
-.section-sub {
-  font-size: 16px;
-  color: var(--text-secondary);
-  max-width: 600px;
-  margin-bottom: 48px;
-}
-
-/* ---- Features ---- */
-.features { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
-.feature-card {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 28px;
-  transition: all .25s;
-}
-.feature-card:hover { border-color: var(--gold); transform: translateY(-4px); }
-.feature-icon { font-size: 32px; margin-bottom: 12px; }
-.feature-card h3 { font-size: 18px; margin-bottom: 8px; }
-.feature-card p { font-size: 14px; color: var(--text-secondary); line-height: 1.7; }
-
-/* ---- Architecture ---- */
-.arch-diagram {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 40px;
-  text-align: center;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  font-size: 13px;
-  line-height: 2.2;
-  overflow-x: auto;
-}
-.arch-diagram .highlight { color: var(--gold); font-weight: 600; }
-.arch-diagram .arrow { color: var(--text-secondary); }
-.arch-diagram .optional { color: #6a5e3c; }
-
-/* ---- Pricing / OSS ---- */
-.oss-box {
-  background: linear-gradient(135deg, var(--bg2), var(--bg3));
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 48px;
-  text-align: center;
-}
-.oss-box h3 { font-size: 24px; margin-bottom: 12px; }
-.oss-box p { color: var(--text-secondary); max-width: 500px; margin: 0 auto 24px; font-size: 15px; }
-.oss-badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 20px; }
-.oss-badge {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 16px;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-/* ---- Testimonials ---- */
-.testimonials {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
-}
-.testimonial {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 20px;
-  font-size: 14px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-.testimonial strong { color: var(--text); }
-
-/* ---- Footer ---- */
-footer {
-  border-top: 1px solid var(--border);
-  padding: 40px 24px;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-footer a { color: var(--gold); text-decoration: none; }
-
-/* ---- Lang specific ---- */
-.pt, .en { display: none; }
-.pt.active, .en.active { display: block; }
-.lang-only { display: none; }
-html[lang="pt-BR"] .lang-only.pt { display: inline; }
-html[lang="en"] .lang-only.en { display: inline; }
-
-/* ---- Misc ---- */
-.center-text { text-align: center; }
-.mt-24 { margin-top: 24px; }
-.mt-48 { margin-top: 48px; }
-.mb-24 { margin-bottom: 24px; }
-
-/* ---- Responsive ---- */
-@media (max-width: 680px) {
-  .nav-links a.nav-hide-mobile { display: none; }
-  .features { grid-template-columns: 1fr; }
-  .hero h1 { font-size: 36px; }
-  .oss-box { padding: 28px 20px; }
-  section { padding: 60px 16px; }
-}
-
-/* ---- Product canvas preview ---- */
-.canvas-preview {
-  position: relative;
-  width: min(920px, 94vw);
-  height: 360px;
-  margin: 72px auto 0;
-  overflow: hidden;
-  border: 1px solid #4a3816;
-  border-radius: 18px;
-  background:
-    linear-gradient(rgba(247,185,40,.055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(247,185,40,.055) 1px, transparent 1px),
-    #171208;
-  background-size: 32px 32px;
-  box-shadow: 0 24px 70px rgba(0,0,0,.4), inset 0 0 80px rgba(247,185,40,.05);
-  text-align: left;
-}
-.canvas-toolbar {
-  height: 38px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 14px;
-  background: rgba(15,13,8,.86);
-  border-bottom: 1px solid #352810;
-}
-.canvas-toolbar i { width: 8px; height: 8px; border-radius: 50%; background: #73541b; }
-.canvas-toolbar i:first-child { background: #d97838; }
-.canvas-toolbar i:nth-child(2) { background: #d9aa38; }
-.canvas-toolbar i:nth-child(3) { background: #73904a; }
-.canvas-toolbar span { margin-left: 8px; color: #75643e; font: 11px 'SF Mono', monospace; }
-.canvas-node {
-  position: absolute;
-  z-index: 2;
-  min-width: 154px;
-  padding: 12px 14px;
-  border: 1px solid #574117;
-  border-radius: 10px;
-  background: rgba(28,22,12,.93);
-  box-shadow: 0 12px 28px rgba(0,0,0,.28);
-}
-.canvas-node .node-title { display: flex; align-items: center; gap: 7px; color: #f4dfad; font-size: 12px; font-weight: 700; }
-.canvas-node .node-dot { width: 7px; height: 7px; border-radius: 50%; background: #e9ad29; box-shadow: 0 0 10px #e9ad29; }
-.canvas-node small { display: block; margin-top: 7px; color: #8d7a50; font: 10px 'SF Mono', monospace; }
-.canvas-node code { color: #d8b969; font: 10px 'SF Mono', monospace; }
-.node-alpha { top: 82px; left: 9%; }
-.node-beta { bottom: 45px; left: 28%; }
-.node-portal { top: 78px; right: 10%; min-width: 188px; }
-.node-note { bottom: 39px; right: 25%; }
-.canvas-line { position: absolute; z-index: 1; height: 1px; transform-origin: left center; background: linear-gradient(90deg, #805d1a, #e6ae32); opacity: .72; }
-.line-one { width: 240px; top: 151px; left: 25%; transform: rotate(20deg); }
-.line-two { width: 230px; top: 157px; left: 54%; transform: rotate(-21deg); }
-.line-three { width: 160px; top: 247px; left: 43%; transform: rotate(-5deg); }
-.canvas-caption { position: absolute; bottom: 14px; left: 16px; color: #695832; font: 10px 'SF Mono', monospace; }
-.mini-preview { height: 128px; margin: -28px -28px 22px; overflow: hidden; position: relative; background: #171208; border-bottom: 1px solid var(--border); }
-.mini-preview.grid { background-image: linear-gradient(rgba(247,185,40,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(247,185,40,.08) 1px, transparent 1px); background-size: 18px 18px; }
-.mini-terminal { position: absolute; top: 22px; left: 20px; width: 145px; padding: 10px; border: 1px solid #73541b; border-radius: 6px; background: #21190b; color: #dcb663; font: 9px 'SF Mono', monospace; line-height: 1.7; }
-.mini-terminal b { color: #f7b928; }
-.mini-portal { position: absolute; top: 17px; right: 20px; width: 145px; height: 92px; border: 1px solid #73541b; border-radius: 6px; background: #261f15; }
-.mini-portal:before { content: '●  ●  ●'; display: block; padding: 5px 7px; color: #896b2c; font-size: 8px; border-bottom: 1px solid #584318; }
-.mini-portal:after { content: 'portal'; position: absolute; top: 45px; left: 51px; color: #c9a75c; font: 10px 'SF Mono', monospace; }
-.mini-note { position: absolute; bottom: 13px; left: 45%; width: 78px; height: 40px; padding: 7px; border-radius: 4px; background: #b18124; color: #261a08; font-size: 9px; transform: rotate(-4deg); }
-.flow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 48px; }
-.flow-step { position: relative; padding: 24px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg2); text-align: left; }
-.flow-step:not(:last-child):after { content: '→'; position: absolute; right: -19px; top: 31px; z-index: 2; color: var(--gold); font-size: 22px; }
-.flow-number { color: var(--gold); font: 12px 'SF Mono', monospace; }
-.flow-step h3 { margin: 10px 0 6px; font-size: 17px; }
-.flow-step p { color: var(--text-secondary); font-size: 13px; }
-@media (max-width: 680px) {
-  .canvas-preview { height: 300px; transform: scale(.96); margin-top: 42px; }
-  .node-alpha { left: 4%; }
-  .node-beta { left: 7%; bottom: 34px; }
-  .node-portal { right: 4%; top: 70px; }
-  .node-note { right: 7%; bottom: 30px; }
-  .line-one { width: 105px; left: 29%; }
-  .line-two { width: 100px; left: 59%; }
-  .line-three { display: none; }
-  .flow { grid-template-columns: 1fr; }
-  .flow-step:not(:last-child):after { content: '↓'; right: auto; left: 28px; top: auto; bottom: -24px; }
-}
-</style>
+    .capabilities { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }.capability { min-height: 272px; padding: 29px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); transition: background .2s; }.capability:hover { background: rgba(243,187,53,.055); }.capability-label { color: var(--honey); font: 11px "SF Mono", monospace; }.capability h3 { margin: 36px 0 12px; font-family: Georgia, serif; font-size: 25px; font-weight: 500; letter-spacing: -.035em; }.capability p { max-width: 280px; margin: 0; color: var(--muted); font-size: 14px; line-height: 1.65; }
+    .system { display: grid; grid-template-columns: .9fr 1.1fr; gap: 58px; align-items: center; }.system-copy h2 { margin: 0 0 17px; font-family: Georgia, serif; font-size: clamp(37px, 4.1vw, 54px); font-weight: 500; line-height: 1; letter-spacing: -.055em; }.system-copy p { max-width: 430px; color: var(--muted); line-height: 1.7; }.pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }.pill { padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font: 11px "SF Mono", monospace; }.system-map { padding: 25px; border: 1px solid var(--line); border-radius: 8px; background: #1a1710; }.map-layer { padding: 15px; border: 1px solid rgba(241,234,216,.13); border-radius: 5px; }.map-layer + .map-layer { position: relative; margin-top: 21px; }.map-layer + .map-layer:before { content: "↓"; position: absolute; top: -20px; left: 50%; color: var(--honey); }.map-layer small { display: block; margin-bottom: 4px; color: #83785f; font: 10px "SF Mono", monospace; }.map-layer b { color: var(--hive); font-size: 14px; }.map-layer p { margin: 5px 0 0; color: #93876c; font-size: 11px; }.map-layer.optional { border-style: dashed; }
+    .open { padding: 104px 0; background: linear-gradient(118deg, #3a2a0d, #201b11 51%, #14130f); }.open-card { display: grid; grid-template-columns: 1.18fr .82fr; gap: 34px; align-items: center; padding: 48px; border: 1px solid rgba(243,187,53,.42); border-radius: 10px; background: rgba(15,13,8,.32); }.open h2 { max-width: 600px; margin: 0 0 16px; font-family: Georgia, serif; font-size: clamp(39px, 4.8vw, 64px); font-weight: 500; letter-spacing: -.06em; line-height: .95; }.open p { max-width: 590px; margin: 0; color: #d6c598; font-size: 15px; line-height: 1.7; }.install { padding: 19px; border: 1px solid rgba(241,234,216,.15); border-radius: 6px; color: #d6c598; background: #12110d; font: 11px/1.85 "SF Mono", monospace; }.install .command { color: var(--honey); }.install .comment { color: #857b64; }
+    footer { padding: 38px 0; color: #7e755f; font-size: 12px; }.footer-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }.footer-row a { color: var(--honey); text-decoration: none; }.footer-links { display: flex; gap: 16px; }
+    @media (max-width: 760px) { .shell { width: calc(100% - 32px); }.nav-links > a:not(.github) { display: none; }.nav-links { gap: 12px; }.github { display: none; } .hero { padding-top: 135px; }.hero-copy h1 { max-width: 360px; font-size: clamp(42px, 13vw, 56px); letter-spacing: -.07em; }.hero-copy > p { max-width: 350px; font-size: 16px; }.scene { height: 345px; margin-top: 54px; }.side-panel, .note, .connect-three { display: none; }.terminal { top: 76px; left: 19px; width: 194px; }.terminal.queen { top: 205px; left: 35px; width: 205px; }.portal { top: 91px; right: 15px; width: 172px; }.portal-page { height: 86px; padding: 9px; }.portal-page strong { font-size: 13px; }.portal-page p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.connect-one { width: 95px; top: 151px; left: 177px; }.connect-two { width: 88px; top: 199px; left: 220px; }.scene-top .status { display: none; }.scene-foot { right: 11px; bottom: 11px; font-size: 8px; }.section-heading, .system, .open-card { grid-template-columns: 1fr; gap: 24px; }.section-heading { margin-bottom: 33px; }.section-heading h2 { width: 100%; max-width: 320px; font-size: clamp(35px, 11vw, 44px); }.section-heading p { width: 100%; max-width: 340px; }.section-heading h2, .section-heading p, .contrast-panel p { overflow-wrap: anywhere; }.contrast, .capabilities { grid-template-columns: 1fr; }.contrast-panel { min-height: 260px; }.capability { min-height: 220px; }.open-card { padding: 29px 23px; }.footer-row { align-items: flex-start; flex-direction: column; }.footer-links { flex-wrap: wrap; } }
+  </style>
 </head>
 <body>
-
-<!-- Nav -->
-<nav>
-  <a href="#" class="nav-brand">🐝 Colmeia</a>
-  <div class="nav-links">
-    <a href="#features" class="nav-hide-mobile"><span class="pt active">Recursos</span><span class="en">Features</span></a>
-    <a href="#architecture" class="nav-hide-mobile"><span class="pt active">Arquitetura</span><span class="en">Architecture</span></a>
-    <a href="#license" class="nav-hide-mobile"><span class="pt active">Licença</span><span class="en">License</span></a>
-    <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener" class="nav-hide-mobile">GitHub</a>
-    <a href="#cta" class="nav-cta"><span class="pt active">Começar</span><span class="en">Get started</span></a>
-  </div>
-</nav>
-
-<!-- Language Toggle -->
-<div class="lang-toggle">
-  <button id="lang-pt" class="active" onclick="setLang('pt-BR')">PT</button>
-  <button id="lang-en" onclick="setLang('en')">EN</button>
-</div>
-
-<!-- Hero -->
-<section class="hero">
-  <div class="hero-bg"></div>
-  <div class="hero-content">
-    <div class="hero-icon">🐝</div>
-    <h1>Colmeia</h1>
-    <p class="subtitle">
-      <span class="pt active">Um espaço visual para pessoas e agentes de IA trabalharem juntos</span>
-      <span class="en">A visual workspace where people and AI agents work together</span>
-    </p>
-    <p class="desc">
-      <span class="pt active">
-        Terminais, notas, portais web e agentes em um canvas infinito. Tudo local, zero telemetria, código aberto.
-      </span>
-      <span class="en">
-        Terminals, notes, web portals, and agents on an infinite canvas. Local-first, zero telemetry, open source.
-      </span>
-    </p>
-    <div class="hero-btns">
-      <a href="https://github.com/AElise08/colmeia/releases" target="_blank" rel="noopener" class="btn btn-primary">
-        <span class="pt active">📥 Baixar para macOS</span>
-        <span class="en">📥 Download for macOS</span>
-      </a>
-      <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener" class="btn btn-secondary">
-        <span>GitHub</span> →
-      </a>
+  <div class="nav-wrap"><div class="shell"><nav>
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span>Colmeia</a>
+    <div class="nav-links">
+      <a href="#capacidades"><span class="lang pt active">Capacidades</span><span class="lang en">Capabilities</span></a>
+      <a href="#arquitetura"><span class="lang pt active">Arquitetura</span><span class="lang en">Architecture</span></a>
+      <a class="github" href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener">GitHub</a>
+      <div class="language" aria-label="Language selector"><button class="active" type="button" data-lang="pt-BR">PT</button><button type="button" data-lang="en">EN</button></div>
     </div>
-    <div class="hero-oss">
-      <span>MIT · macOS 15+ · Swift · </span>
-      <a href="#license">
-        <span class="pt active">Saiba mais</span>
-        <span class="en">Learn more</span>
-      </a>
-    </div>
-    <div class="canvas-preview" aria-label="Preview visual do canvas Colmeia">
-      <div class="canvas-toolbar"><i></i><i></i><i></i><span>colmeia / workspace-local</span></div>
-      <div class="canvas-line line-one"></div><div class="canvas-line line-two"></div><div class="canvas-line line-three"></div>
-      <div class="canvas-node node-alpha"><div class="node-title"><span class="node-dot"></span>Rainha</div><small>coordenando agentes</small><code>colmeia ask Beta ...</code></div>
-      <div class="canvas-node node-beta"><div class="node-title"><span class="node-dot"></span>Agente / review</div><small>terminal ativo</small><code>✓ 12 arquivos revisados</code></div>
-      <div class="canvas-node node-portal"><div class="node-title"><span class="node-dot"></span>Portal / browser</div><small>example.com</small><code>click · fill · snapshot</code></div>
-      <div class="canvas-node node-note"><div class="node-title">📝 Decisões</div><small>nota conectada</small><code>[x] contrato v2</code></div>
-      <div class="canvas-caption">● 4 nodes · 2 conexões · local-first</div>
-    </div>
-  </div>
-</section>
+  </nav></div></div>
 
-<!-- Features -->
-<section id="features">
-  <div class="section-inner">
-    <p class="section-label">
-      <span class="pt active">Recursos</span>
-      <span class="en">Features</span>
-    </p>
-    <h2 class="section-title">
-      <span class="pt active">Tudo que você precisa, sem distrações</span>
-      <span class="en">Everything you need, nothing you don't</span>
-    </h2>
-    <p class="section-sub">
-      <span class="pt active">Um canvas onde terminais, notas e portais coexistem. Sem abas, sem alt-tab, só espaço.</span>
-      <span class="en">A canvas where terminals, notes, and portals coexist. No tabs, no alt-tab, just space.</span>
-    </p>
-    <div class="features">
-      <div class="feature-card">
-        <div class="mini-preview grid"><div class="mini-terminal"><b>$</b> colmeia status<br><b>●</b> 4 agents online<br><b>↳</b> workspace ready</div><div class="mini-note">decisões<br>e contexto</div></div>
-        <div class="feature-icon">🖥️</div>
-        <h3><span class="pt active">Canvas nativo macOS</span><span class="en">Native macOS canvas</span></h3>
-        <p><span class="pt active">App SwiftUI com engine local em Swift. Acelerado por Metal, fluido em qualquer zoom.</span><span class="en">SwiftUI app with a local Swift engine. Metal-accelerated, smooth at any zoom.</span></p>
+  <main id="top">
+    <header class="hero"><div class="shell">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="lang pt active">Orquestração local para IA</span><span class="lang en">Local orchestration for AI</span></div>
+        <h1><span class="lang pt active">A sala de controle para <em>agentes</em>.</span><span class="lang en">The control room for <em>agents</em>.</span></h1>
+        <p><span class="lang pt active">Colmeia reúne terminais, notas, portais e decisões num único espaço visual. Trabalhe com vários agentes sem transformar você no gargalo.</span><span class="lang en">Colmeia brings terminals, notes, portals, and decisions into one visual space. Work with multiple agents without becoming the bottleneck.</span></p>
+        <div class="actions"><a class="button primary" href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener"><span class="lang pt active">Explorar no GitHub</span><span class="lang en">Explore on GitHub</span><span aria-hidden="true">↗</span></a><a class="button secondary" href="#comece"><span class="lang pt active">Como começar</span><span class="lang en">How to start</span></a></div>
+        <div class="meta"><span>MIT</span><span>macOS 15+</span><span>local-first</span><span>Swift</span></div>
       </div>
-      <div class="feature-card">
-        <div class="mini-preview grid"><div class="mini-terminal"><b>rainha →</b> delegando<br>worker-01<br><b>← reply</b> entregue</div><div class="mini-note">fluxo vivo</div></div>
-        <div class="feature-icon">🔗</div>
-        <h3><span class="pt active">Agentes que conversam</span><span class="en">Agents that talk</span></h3>
-        <p><span class="pt active">Conecte terminais e deixe agentes se comunicarem. Um pergunta, outro responde — sem você precisar copiar e colar.</span><span class="en">Connect terminals and let agents talk. One asks, another answers — no copy-paste needed.</span></p>
+      <div class="scene" aria-label="Visualizacao do canvas Colmeia com agentes, portal e notas">
+        <div class="scene-top"><div class="traffic"><i></i><i></i><i></i></div><b>workspaces / produto</b><span class="status">● engine local ativo</span></div>
+        <aside class="side-panel"><p class="side-title">Nodes</p><div class="side-item active"><i></i>Rainha</div><div class="side-item"><i></i>reviewer</div><div class="side-item"><i></i>portal / docs</div><p class="side-title" style="margin-top:27px">Context</p><div class="side-item"><i></i>Decisões</div><div class="side-item"><i></i>Entrega v2</div></aside>
+        <div class="connector connect-one"></div><div class="connector connect-two"></div><div class="connector connect-three"></div>
+        <article class="node terminal"><div class="node-bar"><i></i>reviewer <span class="node-kind">terminal</span></div><div class="terminal-body"><span class="prompt">$</span> colmeia check Rainha<br><span class="reply">✓ contrato revisado</span><br><span class="reply">↳ 3 pontos anotados</span></div></article>
+        <article class="node terminal queen"><div class="node-bar"><i></i>Rainha <span class="node-kind">coordenando</span></div><div class="terminal-body"><span class="prompt">$</span> colmeia ask reviewer<br>"revise o contrato v2"<br><span class="reply">← entrega recebida</span></div></article>
+        <article class="node portal"><div class="node-bar"><i></i>Portal <span class="node-kind">browser</span></div><div class="portal-page"><div class="portal-url">https://docs.example.com</div><strong>API reference</strong><p>Automate browser work from the canvas.</p><button>Snapshot</button></div></article>
+        <article class="node note"><b>Decisao registrada</b><p>[x] contrato v2</p><p>[ ] publicar changelog</p><p>[ ] preparar release</p></article>
+        <div class="scene-foot">4 nodes · 3 conexões · workspace local</div>
       </div>
-      <div class="feature-card">
-        <div class="mini-preview"><div class="mini-portal"></div></div>
-        <div class="feature-icon">🌐</div>
-        <h3><span class="pt active">Portais automatizáveis</span><span class="en">Automated portals</span></h3>
-        <p><span class="pt active">Navegador embutido no canvas. Agentes podem navegar, clicar, preencher, avaliar JS, tirar screenshot e gerar PDF.</span><span class="en">Built-in browser on the canvas. Agents can navigate, click, fill, run JS, screenshot, and generate PDF.</span></p>
-      </div>
-      <div class="feature-card">
-        <div class="mini-preview grid"><div class="mini-note">[x] pesquisa<br>[ ] revisão<br>[ ] entrega</div></div>
-        <div class="feature-icon">📝</div>
-        <h3><span class="pt active">Notas conectadas</span><span class="en">Connected notes</span></h3>
-        <p><span class="pt active">Notas Markdown com checklist e imagens. Conecte um agente a uma nota e ele escreve nela automaticamente.</span><span class="en">Markdown notes with checklists and images. Connect an agent to a note and it writes to it automatically.</span></p>
-      </div>
-      <div class="feature-card">
-        <div class="mini-preview grid"><div class="mini-terminal" style="left:50px;top:25px"><b>queen mode</b><br>connect · spawn<br>observe · decide</div></div>
-        <div class="feature-icon">👑</div>
-        <h3><span class="pt active">Papel Rainha</span><span class="en">Queen role</span></h3>
-        <p><span class="pt active">Um agente coordenador que gerencia conexões, cria terminais e mantém a visão geral do workspace.</span><span class="en">A coordinating agent that manages connections, creates terminals, and keeps the big picture.</span></p>
-      </div>
-      <div class="feature-card">
-        <div class="mini-preview grid"><div class="mini-terminal" style="left:35px;top:28px"><b>room://team</b><br>presence: 4<br>shared context</div></div>
-        <div class="feature-icon">🤝</div>
-        <h3><span class="pt active">Colaboração remota</span><span class="en">Remote collaboration</span></h3>
-        <p><span class="pt active">Hub opcional para salas, convites e presença. Compartilhe contexto sem expor terminais ou arquivos locais.</span><span class="en">Optional Hub for rooms, invites, and presence. Share context without exposing terminals or local files.</span></p>
-      </div>
-    </div>
-    <div class="flow">
-      <div class="flow-step"><span class="flow-number">01 / SEE</span><h3><span class="pt active">Visualize</span><span class="en">Visualize</span></h3><p><span class="pt active">Coloque cada agente no espaço onde ele faz sentido.</span><span class="en">Place every agent in the space where it makes sense.</span></p></div>
-      <div class="flow-step"><span class="flow-number">02 / CONNECT</span><h3><span class="pt active">Conecte</span><span class="en">Connect</span></h3><p><span class="pt active">Ligue terminais, notas e portais para criar contexto.</span><span class="en">Link terminals, notes, and portals to create context.</span></p></div>
-      <div class="flow-step"><span class="flow-number">03 / SHIP</span><h3><span class="pt active">Entregue</span><span class="en">Ship</span></h3><p><span class="pt active">Acompanhe decisões e entregas sem perder o fio.</span><span class="en">Track decisions and deliveries without losing the thread.</span></p></div>
-    </div>
-  </div>
-</section>
+    </div></header>
 
-<!-- Architecture -->
-<section id="architecture" style="background: var(--bg2);">
-  <div class="section-inner center-text">
-    <p class="section-label">
-      <span class="pt active">Arquitetura</span>
-      <span class="en">Architecture</span>
-    </p>
-    <h2 class="section-title">
-      <span class="pt active">Local-first por padrão</span>
-      <span class="en">Local-first by default</span>
-    </h2>
-    <p class="section-sub" style="margin: 0 auto 48px;">
-      <span class="pt active">Seus dados nunca saem do seu Mac a menos que você queira.</span>
-      <span class="en">Your data never leaves your Mac unless you want it to.</span>
-    </p>
-    <div class="arch-diagram">
-      <span class="highlight">macOS App / CLI</span><span class="arrow"> ── WebSocket ──▶ </span><span class="highlight">Colmeia Engine</span><br>
-      <span style="color: transparent;">                           </span><span class="arrow">◀── NDJSON ────</span><span class="highlight"> PTYs · Journals · Document · Notes</span><br>
-      <span style="color: transparent;">                           </span><span class="arrow">       │</span><br>
-      <span style="color: transparent;">                           </span><span class="arrow">       ├── optional ──▶ </span><span class="optional">Colmeia Hub</span><br>
-      <span style="color: transparent;">                           </span><span class="arrow">       │</span><span style="color: transparent;">                    </span><span class="optional">Rooms · Invites · Presence · Snapshots</span><br>
-      <br>
-      <span class="pt active">🔒 Engine local — nunca exponha à internet</span>
-      <span class="en">🔒 Local Engine — never expose to the internet</span><br>
-      <span class="pt active">🌐 Hub opcional — atrás de TLS, auth e rate limit</span>
-      <span class="en">🌐 Optional Hub — behind TLS, auth, and rate limits</span>
-    </div>
-  </div>
-</section>
+    <section class="editorial"><div class="shell">
+      <div class="section-heading"><div><div class="kicker"><span class="lang pt active">O problema</span><span class="lang en">The problem</span></div><h2><span class="lang pt active">O código não é mais o gargalo.</span><span class="lang en">Code is no longer the bottleneck.</span></h2></div><p><span class="lang pt active">Você abre mais agentes, mas ganha mais abas, mais contexto para lembrar e mais trabalho de coordenação. Colmeia torna o trabalho visível para que você possa dirigir, não vigiar.</span><span class="lang en">You launch more agents, but get more tabs, more context to remember, and more coordination work. Colmeia makes the work visible so you can direct it, not babysit it.</span></p></div>
+      <div class="contrast"><article class="contrast-panel"><span class="number">01 / SEM CONTEXTO</span><h3><span class="lang pt active">Uma pilha de terminais.</span><span class="lang en">A stack of terminals.</span></h3><p><span class="lang pt active">O que cada agente fez, decidiu ou precisa fica espalhado entre prompts e janelas.</span><span class="lang en">What each agent did, decided, or needs is scattered across prompts and windows.</span></p><div class="tab-stack"><div class="tab">terminal - claude</div><div class="tab">terminal - codex</div><div class="tab">terminal - testes</div></div></article><article class="contrast-panel dark"><span class="number">02 / COM COLMEIA</span><h3><span class="lang pt active">Um sistema que você enxerga.</span><span class="lang en">A system you can see.</span></h3><p><span class="lang pt active">Cada terminal, portal e nota vira parte de um mesmo mapa. Conexões carregam contexto em vez de esconderem ele.</span><span class="lang en">Every terminal, portal, and note becomes part of one map. Connections carry context instead of hiding it.</span></p><div class="link-rows"><div class="link-row"><i></i>Rainha <span>→</span> reviewer <i></i></div><div class="link-row"><i></i>reviewer <span>→</span> Decisões <i></i></div></div></article></div>
+    </div></section>
 
-<!-- License -->
-<section id="license">
-  <div class="section-inner center-text">
-    <p class="section-label">
-      <span class="pt active">Licença</span>
-      <span class="en">License</span>
-    </p>
-    <h2 class="section-title">
-      <span class="pt active">MIT · Aberto · Gratuito</span>
-      <span class="en">MIT · Open · Free</span>
-    </h2>
-    <div class="oss-box">
-      <div class="oss-badges">
-        <span class="oss-badge">MIT License</span>
-        <span class="oss-badge">macOS 15+</span>
-        <span class="oss-badge">Swift 6</span>
-        <span class="oss-badge">Zero Telemetry</span>
-      </div>
-      <h3>
-        <span class="pt active">Código aberto para sempre</span>
-        <span class="en">Open source forever</span>
-      </h3>
-      <p>
-        <span class="pt active">
-          Colmeia é MIT. Use, modifique, fork, comercialize. O nome e a identidade visual são protegidos por política de marca — não por restrição de licença. Nada de telemetria, nada de nuvem obrigatória.
-        </span>
-        <span class="en">
-          Colmeia is MIT. Use, modify, fork, commercialize. The name and visual identity are protected by a trademark policy — not by license restriction. No telemetry, no mandatory cloud.
-        </span>
-      </p>
-      <div class="mt-24">
-        <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener" class="btn btn-primary">
-          <span class="pt active">📦 Ver no GitHub</span>
-          <span class="en">📦 View on GitHub</span>
-        </a>
-      </div>
-    </div>
-  </div>
-</section>
+    <section id="capacidades"><div class="shell">
+      <div class="section-heading"><div><div class="kicker"><span class="lang pt active">Capacidades</span><span class="lang en">Capabilities</span></div><h2><span class="lang pt active">Coordenação sem cola e fita adesiva.</span><span class="lang en">Coordination without glue code.</span></h2></div><p><span class="lang pt active">O canvas não substitui seu terminal ou seu agente. Ele é a camada que dá forma, memória e direção ao trabalho que já está acontecendo.</span><span class="lang en">The canvas does not replace your terminal or agent. It is the layer that gives form, memory, and direction to work already happening.</span></p></div>
+      <div class="capabilities"><article class="capability"><div class="capability-label">01 / PTY</div><h3><span class="lang pt active">Terminais reais</span><span class="lang en">Real terminals</span></h3><p><span class="lang pt active">Crie e acompanhe sessões de shell, Codex, Claude Code, OpenCode e Gemini CLI no mesmo workspace.</span><span class="lang en">Create and observe shell, Codex, Claude Code, OpenCode, and Gemini CLI sessions in the same workspace.</span></p></article><article class="capability"><div class="capability-label">02 / AGENT-TO-AGENT</div><h3><span class="lang pt active">Conversas auditáveis</span><span class="lang en">Auditable conversations</span></h3><p><span class="lang pt active">Agentes perguntam, respondem e passam entregas pelo canvas. O histórico fica no journal da sessão.</span><span class="lang en">Agents ask, answer, and hand off deliveries through the canvas. History stays in the session journal.</span></p></article><article class="capability"><div class="capability-label">03 / BROWSER</div><h3><span class="lang pt active">Portais automatizados</span><span class="lang en">Automated portals</span></h3><p><span class="lang pt active">Navegue, avalie JavaScript, clique, preencha campos, envie teclas, capture PNG e gere PDF.</span><span class="lang en">Navigate, evaluate JavaScript, click, fill fields, send keys, capture PNG, and generate PDF.</span></p></article><article class="capability"><div class="capability-label">04 / MEMORY</div><h3><span class="lang pt active">Notas e decisões</span><span class="lang en">Notes and decisions</span></h3><p><span class="lang pt active">Notas Markdown conectadas preservam checklists, decisões, anexos e o contexto da entrega.</span><span class="lang en">Connected Markdown notes retain checklists, decisions, attachments, and delivery context.</span></p></article><article class="capability"><div class="capability-label">05 / QUEEN</div><h3><span class="lang pt active">Papel Rainha</span><span class="lang en">Queen role</span></h3><p><span class="lang pt active">Dê a um agente permissão explícita para coordenar nós, conexões e tarefas do workspace.</span><span class="lang en">Give one agent explicit permission to coordinate nodes, connections, and workspace tasks.</span></p></article><article class="capability"><div class="capability-label">06 / HUB</div><h3><span class="lang pt active">Colaboração opcional</span><span class="lang en">Optional collaboration</span></h3><p><span class="lang pt active">Salas, presença e convites sincronizam contexto compartilhável, não o seu computador inteiro.</span><span class="lang en">Rooms, presence, and invites synchronize shareable context, not your entire computer.</span></p></article></div>
+    </div></section>
 
-<!-- Testimonials (from real tweets about Colmeia) -->
-<section style="background: var(--bg2);">
-  <div class="section-inner center-text">
-    <p class="section-label">
-      <span class="pt active">Feedback</span>
-      <span class="en">Feedback</span>
-    </p>
-    <h2 class="section-title" style="margin-bottom: 40px;">
-      <span class="pt active">Quem usa recomenda</span>
-      <span class="en">Loved by its users</span>
-    </h2>
-    <div class="testimonials">
-      <div class="testimonial">
-        "It's an infinite canvas where every terminal is a node — you drag agents around, connect them with lines, and they talk to each other through PTY. No API glue, no middleware."<br><br>
-        <strong>— yrzhe.top</strong>
-      </div>
-      <div class="testimonial">
-        "I just setup my night shift agent swarm in Maestri. It works perfectly. How the hell can someone pay more for this app? It is f*cking awesome!"<br><br>
-        <strong>— Zsolt Benke</strong>
-      </div>
-      <div class="testimonial">
-        "You're way ahead of the curve, brother. I need you to market this much more aggressively. Maestri unlocks so much potential for multi agent orchestration!"<br><br>
-        <strong>— Ved</strong>
-      </div>
-    </div>
-  </div>
-</section>
+    <section id="arquitetura" style="background:#19170f"><div class="shell"><div class="system"><div class="system-copy"><div class="kicker"><span class="lang pt active">Arquitetura</span><span class="lang en">Architecture</span></div><h2><span class="lang pt active">Seu Mac continua sendo a fonte de verdade.</span><span class="lang en">Your Mac remains the source of truth.</span></h2><p><span class="lang pt active">O Engine local controla PTYs, journals e arquivos do workspace. O Hub só entra quando você decide colaborar, e não recebe acesso ao seu shell.</span><span class="lang en">The local Engine controls PTYs, journals, and workspace files. The Hub only enters when you choose to collaborate, and never gets shell access.</span></p><div class="pill-row"><span class="pill">local Engine</span><span class="pill">no required account</span><span class="pill">optional Hub</span><span class="pill">documented protocol</span></div></div><div class="system-map"><div class="map-layer"><small>ON YOUR MAC</small><b>macOS App + CLI</b><p>Canvas, commands, and managed terminals</p></div><div class="map-layer"><small>ON YOUR MAC</small><b>Colmeia Engine</b><p>PTYS, document, journals, notes, portal sessions</p></div><div class="map-layer optional"><small>ONLY IF YOU ENABLE IT</small><b>Colmeia Hub</b><p>Rooms, invites, presence, sanitized shared state</p></div></div></div></div></section>
 
-<!-- CTA -->
-<section id="cta">
-  <div class="section-inner center-text">
-    <h2 class="section-title">
-      <span class="pt active">Pronto para organizar seus agentes?</span>
-      <span class="en">Ready to organize your agents?</span>
-    </h2>
-    <p class="section-sub" style="margin: 0 auto 32px;">
-      <span class="pt active">Grátis. Local. Código aberto. macOS 15+.</span>
-      <span class="en">Free. Local. Open source. macOS 15+.</span>
-    </p>
-    <div class="hero-btns">
-      <a href="https://github.com/AElise08/colmeia/releases" target="_blank" rel="noopener" class="btn btn-primary">
-        <span class="pt active">📥 Baixar</span>
-        <span class="en">📥 Download</span>
-      </a>
-      <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener" class="btn btn-secondary">GitHub →</a>
-    </div>
-    <p class="mt-24" style="color: var(--text-secondary); font-size: 14px;">
-      <span class="pt active">Requer macOS 15.4+ e Apple Silicon.</span>
-      <span class="en">Requires macOS 15.4+ and Apple Silicon.</span>
-    </p>
-  </div>
-</section>
-
-<!-- Footer -->
-<footer>
-  <p>
-    🐝 Colmeia —
-    <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener">GitHub</a> ·
-    <a href="https://github.com/AElise08/colmeia/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a> ·
-    <a href="https://github.com/AElise08/colmeia/blob/main/TRADEMARKS.md" target="_blank" rel="noopener">Trademark Policy</a>
-  </p>
-  <p style="margin-top: 8px; font-size: 12px;">
-    <span class="pt active">Feito com ☕ e código aberto.</span>
-    <span class="en">Made with ☕ and open source.</span>
-  </p>
-</footer>
-
-<script>
-function setLang(lang) {
-  document.documentElement.lang = lang;
-  document.querySelectorAll('.lang-toggle button').forEach(b => b.classList.remove('active'));
-  document.getElementById('lang-' + (lang === 'pt-BR' ? 'pt' : 'en')).classList.add('active');
-  document.querySelectorAll('.pt, .en').forEach(el => {
-    el.classList.toggle('active', el.classList.contains(lang === 'pt-BR' ? 'pt' : 'en'));
-  });
-}
-</script>
+    <section id="comece" class="open"><div class="shell"><div class="open-card"><div><div class="kicker">MIT / OPEN SOURCE</div><h2><span class="lang pt active">Use. Modifique. Faça seu próprio caminho.</span><span class="lang en">Use it. Modify it. Make it your own.</span></h2><p><span class="lang pt active">Colmeia tem licença MIT. Você pode estudar, adaptar e até comercializar o código. A política de marca protege o nome e a identidade do projeto contra representação enganosa.</span><span class="lang en">Colmeia is MIT licensed. You can study, adapt, and even commercialize the code. The trademark policy protects the project name and identity against misleading representation.</span></p><div class="actions" style="margin-top:27px"><a class="button primary" href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener"><span class="lang pt active">Abrir repositório</span><span class="lang en">Open repository</span><span aria-hidden="true">↗</span></a><a class="button secondary" href="SPEC.md"><span class="lang pt active">Ler especificação</span><span class="lang en">Read specification</span></a></div></div><div class="install"><span class="comment"># clone and run locally</span><br><span class="command">git clone</span> https://github.com/AElise08/colmeia.git<br><span class="command">cd</span> colmeia<br><span class="command">swift build</span><br><span class="command">./scripts/build-app.sh</span><br><br><span class="comment"># test the workspace</span><br><span class="command">./test.sh</span></div></div></div></section>
+  </main>
+  <footer><div class="shell footer-row"><span>Colmeia · MIT · local-first</span><div class="footer-links"><a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/AElise08/colmeia/blob/main/LICENSE" target="_blank" rel="noopener">License</a><a href="https://github.com/AElise08/colmeia/blob/main/TRADEMARKS.md" target="_blank" rel="noopener">Trademark policy</a></div></div></footer>
+  <script>
+    const buttons = document.querySelectorAll('[data-lang]');
+    const text = document.querySelectorAll('.lang');
+    function setLanguage(language) {
+      document.documentElement.lang = language;
+      buttons.forEach((button) => button.classList.toggle('active', button.dataset.lang === language));
+      text.forEach((element) => element.classList.toggle('active', element.classList.contains(language === 'pt-BR' ? 'pt' : 'en')));
+    }
+    buttons.forEach((button) => button.addEventListener('click', () => setLanguage(button.dataset.lang)));
+  </script>
 </body>
 </html>
