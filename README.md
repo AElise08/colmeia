@@ -143,13 +143,10 @@ de produção devem ficar fora do Git.
 
 ### Licença e marca
 
-O código é [MIT](LICENSE). Isso inclui uso comercial: qualquer pessoa pode criar
-um fork ou serviço comercial baseado no código. MIT não pode proibir esse uso.
-
-Para proteger a identidade do projeto sem fechar o código, a política em
-[`TRADEMARKS.md`](TRADEMARKS.md) reserva o nome e a identidade visual Colmeia
-contra uso que finja ser a versão oficial. Ela não impede forks comerciais; ela
-impede que eles se apresentem como o Colmeia oficial.
+O código é distribuído sob a licença [MIT](LICENSE). O nome, o logotipo e a
+identidade visual Colmeia são tratados separadamente pela política em
+[`TRADEMARKS.md`](TRADEMARKS.md), que evita que outra distribuição se apresente
+como a versão oficial do projeto.
 
 ---
 
@@ -200,10 +197,9 @@ SSH keys, certificates, `.env` files, or production workspace data.
 
 ### License And Name
 
-Colmeia is released under the [MIT License](LICENSE). MIT allows commercial use;
-it cannot prevent commercial forks. The project name and visual identity are
-covered by the non-code policy in [`TRADEMARKS.md`](TRADEMARKS.md), which prevents
-misrepresentation as the official Colmeia project without restricting the code.
+Colmeia is released under the [MIT License](LICENSE). The project name, logo, and
+visual identity are covered separately by [`TRADEMARKS.md`](TRADEMARKS.md), which
+prevents misrepresentation as the official Colmeia project.
 
 ---
 
