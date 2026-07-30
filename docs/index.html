@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Colmeia — Canvas local para pessoas e agentes de IA</title>
+<meta name="description" content="Colmeia é um canvas local-first para coordenar trabalho entre humanos e agentes de IA. Terminais, notas, portais, tudo num espaço visual.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐝</text></svg>">
+<style>
+:root {
+  --bg: #0f0d08;
+  --bg2: #1a150c;
+  --bg3: #241e10;
+  --gold: #f7b928;
+  --gold-light: #ffe29a;
+  --gold-dark: #cf7415;
+  --text: #f5edd6;
+  --text-secondary: #a89878;
+  --border: #2a2212;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 { font-weight: 700; line-height: 1.2; }
+
+/* ---- Language toggle ---- */
+.lang-toggle {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  z-index: 100;
+  display: flex;
+  gap: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.lang-toggle button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .2s;
+}
+.lang-toggle button.active { background: var(--gold); color: #0f0d08; }
+.lang-toggle button:hover:not(.active) { color: var(--text); }
+
+/* ---- Nav ---- */
+nav {
+  position: fixed;
+  top: 0;
+  width: 100%;
+  z-index: 90;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  background: rgba(15,13,8,.8);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+  text-decoration: none;
+}
+.nav-links { display: flex; gap: 24px; align-items: center; }
+.nav-links a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  transition: color .2s;
+}
+.nav-links a:hover { color: var(--gold); }
+.nav-cta {
+  background: var(--gold);
+  color: #0f0d08 !important;
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+/* ---- Hero ---- */
+.hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 120px 24px 80px;
+  position: relative;
+  overflow: hidden;
+}
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  opacity: .07;
+  background:
+    radial-gradient(circle at 20% 50%, #f7b928 0, transparent 50%),
+    radial-gradient(circle at 80% 30%, #cf7415 0, transparent 50%),
+    radial-gradient(circle at 50% 80%, #f7b928 0, transparent 40%);
+  z-index: 0;
+}
+.hero-content { position: relative; z-index: 1; max-width: 800px; }
+.hero-icon { font-size: 56px; margin-bottom: 16px; }
+.hero h1 {
+  font-size: clamp(40px, 7vw, 72px);
+  letter-spacing: -2px;
+  margin-bottom: 8px;
+  background: linear-gradient(135deg, var(--gold-light), var(--gold), var(--gold-dark));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.hero .subtitle {
+  font-size: clamp(18px, 2.5vw, 28px);
+  color: var(--text-secondary);
+  margin-bottom: 32px;
+  font-weight: 400;
+}
+.hero .desc {
+  font-size: 16px;
+  color: var(--text-secondary);
+  max-width: 600px;
+  margin: 0 auto 40px;
+  line-height: 1.7;
+}
+.hero-btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 28px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: all .25s;
+  cursor: pointer;
+}
+.btn-primary { background: var(--gold); color: #0f0d08; }
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(247,185,40,.25); }
+.btn-secondary { background: var(--bg2); color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover { border-color: var(--gold); color: var(--gold); transform: translateY(-2px); }
+
+.hero-oss {
+  margin-top: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.hero-oss a { color: var(--gold); text-decoration: none; }
+.hero-oss a:hover { text-decoration: underline; }
+
+/* ---- Sections ---- */
+section { padding: 100px 24px; }
+.section-inner { max-width: 1100px; margin: 0 auto; }
+.section-label {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: var(--gold);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.section-title {
+  font-size: clamp(28px, 4vw, 44px);
+  margin-bottom: 12px;
+}
+.section-sub {
+  font-size: 16px;
+  color: var(--text-secondary);
+  max-width: 600px;
+  margin-bottom: 48px;
+}
+
+/* ---- Features ---- */
+.features { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+.feature-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px;
+  transition: all .25s;
+}
+.feature-card:hover { border-color: var(--gold); transform: translateY(-4px); }
+.feature-icon { font-size: 32px; margin-bottom: 12px; }
+.feature-card h3 { font-size: 18px; margin-bottom: 8px; }
+.feature-card p { font-size: 14px; color: var(--text-secondary); line-height: 1.7; }
+
+/* ---- Architecture ---- */
+.arch-diagram {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px;
+  text-align: center;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  line-height: 2.2;
+  overflow-x: auto;
+}
+.arch-diagram .highlight { color: var(--gold); font-weight: 600; }
+.arch-diagram .arrow { color: var(--text-secondary); }
+.arch-diagram .optional { color: #6a5e3c; }
+
+/* ---- Pricing / OSS ---- */
+.oss-box {
+  background: linear-gradient(135deg, var(--bg2), var(--bg3));
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 48px;
+  text-align: center;
+}
+.oss-box h3 { font-size: 24px; margin-bottom: 12px; }
+.oss-box p { color: var(--text-secondary); max-width: 500px; margin: 0 auto 24px; font-size: 15px; }
+.oss-badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 20px; }
+.oss-badge {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* ---- Testimonials ---- */
+.testimonials {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+.testimonial {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.testimonial strong { color: var(--text); }
+
+/* ---- Footer ---- */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+footer a { color: var(--gold); text-decoration: none; }
+
+/* ---- Lang specific ---- */
+.pt, .en { display: none; }
+.pt.active, .en.active { display: block; }
+.lang-only { display: none; }
+html[lang="pt-BR"] .lang-only.pt { display: inline; }
+html[lang="en"] .lang-only.en { display: inline; }
+
+/* ---- Misc ---- */
+.center-text { text-align: center; }
+.mt-24 { margin-top: 24px; }
+.mt-48 { margin-top: 48px; }
+.mb-24 { margin-bottom: 24px; }
+
+/* ---- Responsive ---- */
+@media (max-width: 680px) {
+  .nav-links a.nav-hide-mobile { display: none; }
+  .features { grid-template-columns: 1fr; }
+  .hero h1 { font-size: 36px; }
+  .oss-box { padding: 28px 20px; }
+  section { padding: 60px 16px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+  <a href="#" class="nav-brand">🐝 Colmeia</a>
+  <div class="nav-links">
+    <a href="#features" class="nav-hide-mobile"><span class="pt active">Recursos</span><span class="en">Features</span></a>
+    <a href="#architecture" class="nav-hide-mobile"><span class="pt active">Arquitetura</span><span class="en">Architecture</span></a>
+    <a href="#license" class="nav-hide-mobile"><span class="pt active">Licença</span><span class="en">License</span></a>
+    <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener" class="nav-hide-mobile">GitHub</a>
+    <a href="#cta" class="nav-cta"><span class="pt active">Começar</span><span class="en">Get started</span></a>
+  </div>
+</nav>
+
+<!-- Language Toggle -->
+<div class="lang-toggle">
+  <button id="lang-pt" class="active" onclick="setLang('pt-BR')">PT</button>
+  <button id="lang-en" onclick="setLang('en')">EN</button>
+</div>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="hero-bg"></div>
+  <div class="hero-content">
+    <div class="hero-icon">🐝</div>
+    <h1>Colmeia</h1>
+    <p class="subtitle">
+      <span class="pt active">Um espaço visual para pessoas e agentes de IA trabalharem juntos</span>
+      <span class="en">A visual workspace where people and AI agents work together</span>
+    </p>
+    <p class="desc">
+      <span class="pt active">
+        Terminais, notas, portais web e agentes em um canvas infinito. Tudo local, zero telemetria, código aberto.
+      </span>
+      <span class="en">
+        Terminals, notes, web portals, and agents on an infinite canvas. Local-first, zero telemetry, open source.
+      </span>
+    </p>
+    <div class="hero-btns">
+      <a href="https://github.com/AElise08/colmeia/releases" target="_blank" rel="noopener" class="btn btn-primary">
+        <span class="pt active">📥 Baixar para macOS</span>
+        <span class="en">📥 Download for macOS</span>
+      </a>
+      <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener" class="btn btn-secondary">
+        <span>GitHub</span> →
+      </a>
+    </div>
+    <div class="hero-oss">
+      <span>MIT · macOS 15+ · Swift · </span>
+      <a href="#license">
+        <span class="pt active">Saiba mais</span>
+        <span class="en">Learn more</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section id="features">
+  <div class="section-inner">
+    <p class="section-label">
+      <span class="pt active">Recursos</span>
+      <span class="en">Features</span>
+    </p>
+    <h2 class="section-title">
+      <span class="pt active">Tudo que você precisa, sem distrações</span>
+      <span class="en">Everything you need, nothing you don't</span>
+    </h2>
+    <p class="section-sub">
+      <span class="pt active">Um canvas onde terminais, notas e portais coexistem. Sem abas, sem alt-tab, só espaço.</span>
+      <span class="en">A canvas where terminals, notes, and portals coexist. No tabs, no alt-tab, just space.</span>
+    </p>
+    <div class="features">
+      <div class="feature-card">
+        <div class="feature-icon">🖥️</div>
+        <h3><span class="pt active">Canvas nativo macOS</span><span class="en">Native macOS canvas</span></h3>
+        <p><span class="pt active">App SwiftUI com engine local em Swift. Acelerado por Metal, fluido em qualquer zoom.</span><span class="en">SwiftUI app with a local Swift engine. Metal-accelerated, smooth at any zoom.</span></p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔗</div>
+        <h3><span class="pt active">Agentes que conversam</span><span class="en">Agents that talk</span></h3>
+        <p><span class="pt active">Conecte terminais e deixe agentes se comunicarem. Um pergunta, outro responde — sem você precisar copiar e colar.</span><span class="en">Connect terminals and let agents talk. One asks, another answers — no copy-paste needed.</span></p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌐</div>
+        <h3><span class="pt active">Portais automatizáveis</span><span class="en">Automated portals</span></h3>
+        <p><span class="pt active">Navegador embutido no canvas. Agentes podem navegar, clicar, preencher, avaliar JS, tirar screenshot e gerar PDF.</span><span class="en">Built-in browser on the canvas. Agents can navigate, click, fill, run JS, screenshot, and generate PDF.</span></p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📝</div>
+        <h3><span class="pt active">Notas conectadas</span><span class="en">Connected notes</span></h3>
+        <p><span class="pt active">Notas Markdown com checklist e imagens. Conecte um agente a uma nota e ele escreve nela automaticamente.</span><span class="en">Markdown notes with checklists and images. Connect an agent to a note and it writes to it automatically.</span></p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">👑</div>
+        <h3><span class="pt active">Papel Rainha</span><span class="en">Queen role</span></h3>
+        <p><span class="pt active">Um agente coordenador que gerencia conexões, cria terminais e mantém a visão geral do workspace.</span><span class="en">A coordinating agent that manages connections, creates terminals, and keeps the big picture.</span></p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🤝</div>
+        <h3><span class="pt active">Colaboração remota</span><span class="en">Remote collaboration</span></h3>
+        <p><span class="pt active">Hub opcional para salas, convites e presença. Compartilhe contexto sem expor terminais ou arquivos locais.</span><span class="en">Optional Hub for rooms, invites, and presence. Share context without exposing terminals or local files.</span></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Architecture -->
+<section id="architecture" style="background: var(--bg2);">
+  <div class="section-inner center-text">
+    <p class="section-label">
+      <span class="pt active">Arquitetura</span>
+      <span class="en">Architecture</span>
+    </p>
+    <h2 class="section-title">
+      <span class="pt active">Local-first por padrão</span>
+      <span class="en">Local-first by default</span>
+    </h2>
+    <p class="section-sub" style="margin: 0 auto 48px;">
+      <span class="pt active">Seus dados nunca saem do seu Mac a menos que você queira.</span>
+      <span class="en">Your data never leaves your Mac unless you want it to.</span>
+    </p>
+    <div class="arch-diagram">
+      <span class="highlight">macOS App / CLI</span><span class="arrow"> ── WebSocket ──▶ </span><span class="highlight">Colmeia Engine</span><br>
+      <span style="color: transparent;">                           </span><span class="arrow">◀── NDJSON ────</span><span class="highlight"> PTYs · Journals · Document · Notes</span><br>
+      <span style="color: transparent;">                           </span><span class="arrow">       │</span><br>
+      <span style="color: transparent;">                           </span><span class="arrow">       ├── optional ──▶ </span><span class="optional">Colmeia Hub</span><br>
+      <span style="color: transparent;">                           </span><span class="arrow">       │</span><span style="color: transparent;">                    </span><span class="optional">Rooms · Invites · Presence · Snapshots</span><br>
+      <br>
+      <span class="pt active">🔒 Engine local — nunca exponha à internet</span>
+      <span class="en">🔒 Local Engine — never expose to the internet</span><br>
+      <span class="pt active">🌐 Hub opcional — atrás de TLS, auth e rate limit</span>
+      <span class="en">🌐 Optional Hub — behind TLS, auth, and rate limits</span>
+    </div>
+  </div>
+</section>
+
+<!-- License -->
+<section id="license">
+  <div class="section-inner center-text">
+    <p class="section-label">
+      <span class="pt active">Licença</span>
+      <span class="en">License</span>
+    </p>
+    <h2 class="section-title">
+      <span class="pt active">MIT · Aberto · Gratuito</span>
+      <span class="en">MIT · Open · Free</span>
+    </h2>
+    <div class="oss-box">
+      <div class="oss-badges">
+        <span class="oss-badge">MIT License</span>
+        <span class="oss-badge">macOS 15+</span>
+        <span class="oss-badge">Swift 6</span>
+        <span class="oss-badge">Zero Telemetry</span>
+      </div>
+      <h3>
+        <span class="pt active">Código aberto para sempre</span>
+        <span class="en">Open source forever</span>
+      </h3>
+      <p>
+        <span class="pt active">
+          Colmeia é MIT. Use, modifique, fork, comercialize. O nome e a identidade visual são protegidos por política de marca — não por restrição de licença. Nada de telemetria, nada de nuvem obrigatória.
+        </span>
+        <span class="en">
+          Colmeia is MIT. Use, modify, fork, commercialize. The name and visual identity are protected by a trademark policy — not by license restriction. No telemetry, no mandatory cloud.
+        </span>
+      </p>
+      <div class="mt-24">
+        <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener" class="btn btn-primary">
+          <span class="pt active">📦 Ver no GitHub</span>
+          <span class="en">📦 View on GitHub</span>
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Testimonials (from real tweets about Colmeia) -->
+<section style="background: var(--bg2);">
+  <div class="section-inner center-text">
+    <p class="section-label">
+      <span class="pt active">Feedback</span>
+      <span class="en">Feedback</span>
+    </p>
+    <h2 class="section-title" style="margin-bottom: 40px;">
+      <span class="pt active">Quem usa recomenda</span>
+      <span class="en">Loved by its users</span>
+    </h2>
+    <div class="testimonials">
+      <div class="testimonial">
+        "It's an infinite canvas where every terminal is a node — you drag agents around, connect them with lines, and they talk to each other through PTY. No API glue, no middleware."<br><br>
+        <strong>— yrzhe.top</strong>
+      </div>
+      <div class="testimonial">
+        "I just setup my night shift agent swarm in Maestri. It works perfectly. How the hell can someone pay more for this app? It is f*cking awesome!"<br><br>
+        <strong>— Zsolt Benke</strong>
+      </div>
+      <div class="testimonial">
+        "You're way ahead of the curve, brother. I need you to market this much more aggressively. Maestri unlocks so much potential for multi agent orchestration!"<br><br>
+        <strong>— Ved</strong>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section id="cta">
+  <div class="section-inner center-text">
+    <h2 class="section-title">
+      <span class="pt active">Pronto para organizar seus agentes?</span>
+      <span class="en">Ready to organize your agents?</span>
+    </h2>
+    <p class="section-sub" style="margin: 0 auto 32px;">
+      <span class="pt active">Grátis. Local. Código aberto. macOS 15+.</span>
+      <span class="en">Free. Local. Open source. macOS 15+.</span>
+    </p>
+    <div class="hero-btns">
+      <a href="https://github.com/AElise08/colmeia/releases" target="_blank" rel="noopener" class="btn btn-primary">
+        <span class="pt active">📥 Baixar</span>
+        <span class="en">📥 Download</span>
+      </a>
+      <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener" class="btn btn-secondary">GitHub →</a>
+    </div>
+    <p class="mt-24" style="color: var(--text-secondary); font-size: 14px;">
+      <span class="pt active">Requer macOS 15.4+ e Apple Silicon.</span>
+      <span class="en">Requires macOS 15.4+ and Apple Silicon.</span>
+    </p>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p>
+    🐝 Colmeia —
+    <a href="https://github.com/AElise08/colmeia" target="_blank" rel="noopener">GitHub</a> ·
+    <a href="https://github.com/AElise08/colmeia/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a> ·
+    <a href="https://github.com/AElise08/colmeia/blob/main/TRADEMARKS.md" target="_blank" rel="noopener">Trademark Policy</a>
+  </p>
+  <p style="margin-top: 8px; font-size: 12px;">
+    <span class="pt active">Feito com ☕ e código aberto.</span>
+    <span class="en">Made with ☕ and open source.</span>
+  </p>
+</footer>
+
+<script>
+function setLang(lang) {
+  document.documentElement.lang = lang;
+  document.querySelectorAll('.lang-toggle button').forEach(b => b.classList.remove('active'));
+  document.getElementById('lang-' + (lang === 'pt-BR' ? 'pt' : 'en')).classList.add('active');
+  document.querySelectorAll('.pt, .en').forEach(el => {
+    el.classList.toggle('active', el.classList.contains(lang === 'pt-BR' ? 'pt' : 'en'));
+  });
+}
+</script>
+</body>
+</html>
