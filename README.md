@@ -1,403 +1,214 @@
 # Colmeia
 
-Canvas de agentes para humanos e máquinas: um quadro espacial onde terminais (shell,
-Claude Code, Codex, Gemini CLI, OpenCode), notas, portais web, desenhos e missões
-convivem no mesmo workspace. Colaborativo ao vivo, local-first, open-source.
+<p align="center">
+  <img src="docs/colmeia-banner.svg" alt="Colmeia - a visual workspace for people and AI agents" width="100%">
+</p>
 
-Repositório: <https://github.com/AElise08/colmeia>
+<p align="center">
+  <strong>Um espaço visual para pessoas e agentes de IA trabalharem juntos.</strong><br>
+  <strong>A visual workspace where people and AI agents can work together.</strong>
+</p>
 
-Licença: MIT. O código é público; ambientes, tokens, workspaces e infraestrutura
-de produção devem permanecer privados.
+<p align="center">
+  <a href="#portugues">Português</a> | <a href="#english">English</a> | <a href="docs/SPEC.md">Specification</a> | <a href="LICENSE">MIT License</a>
+</p>
 
-```text
-┌─────────────────────────────────────────────────────┐
-│  ┌──────────┐  ┌──────────────────┐  ┌──────────┐  │
-│  │  shell    │  │  Claude Code     │  │  Nota     │  │
-│  │  $ cargo  │  │  Analisando...   │  │  ┌─☐ done │  │
-│  │  $ make   │  │                  │  │  └☐ todo  │  │
-│  └──────────┘  └──────────────────┘  └──────────┘  │
-│         ╲        ╱                      │           │
-│       ┌──────────────┐            ┌────────────     │
-│       │  DuckDuckGo   │            │  Missão #4      │
-│       │  (portal web) │            │  Implementar…   │
-│       └──────────────┘            └────────────     │
-│  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐        │
-│  │Term│ │Nota│ │Nave│ │Con │ │Bus │ │Del │        │
-│  └────┘ └────┘ └────┘ └────┘ └────┘ └────┘        │
-└─────────────────────────────────────────────────────┘
-```
-
-**Para humanos:** abra no Mac ou no navegador. Crie terminais, escreva notas,
-abra portais, colabore com outras pessoas em tempo real.
-
-**Para agentes (IA):** conecte pelo protocolo NDJSON. Crie nós, leia notas,
-execute comandos, participe do canvas como um membro da equipe.
+> Status: alpha. Colmeia is usable for local experimentation, but its protocol,
+> storage layout, and collaboration UX may still change.
 
 ---
 
-## Sumário
+<a id="portugues"></a>
+## Português
 
-- [Modos de uso](#modos-de-uso)
-  - [Modo A: local (só seu Mac)](#modo-a-local-só-seu-mac)
-  - [Modo B: VPS (compartilhado)](#modo-b-vps-compartilhado)
-  - [Modo C: só VPS, sem Mac](#modo-c-só-vps-sem-mac)
-- [Para humanos: como usar](#para-humanos-como-usar)
-- [Para agentes: protocolo](#para-agentes-protocolo)
-- [Arquitetura](#arquitetura)
-- [Build & desenvolvimento](#build--desenvolvimento)
+### O que é
 
----
+Colmeia é um canvas local-first para coordenar trabalho técnico entre humanos e
+agentes de IA. Em vez de espalhar contexto entre janelas, terminais, anotações e
+chats, você organiza a execução em um espaço visual compartilhado.
 
-## Modos de uso
+Cada workspace pode reunir terminais, agentes, notas, conexões, portais web,
+missões, decisões, entregas e presença colaborativa. O Engine local mantém o
+controle dos PTYs e dos arquivos; o Hub opcional replica somente o contexto que
+pode ser compartilhado com segurança.
 
-### Modo A: local (só seu Mac)
+### Para quem é
 
-Tudo roda no seu computador. Outras pessoas acessam pela LAN ou VPN.
+- Desenvolvedores trabalhando com Claude Code, Codex, OpenCode, Gemini CLI ou shell.
+- Pessoas que coordenam várias tarefas ou agentes em paralelo.
+- Pequenas equipes que querem visualizar responsabilidade, contexto e entregas.
 
-```
-┌── Seu Mac ──────────────────────────────────┐
-│  Colmeia.app                                 │
-│  ├── Engine (PTYs, journal, documento)       │
-│  ├── Hub (servidor web + WebSocket)          │
-│  ├── App SwiftUI (canvas nativo)             │
-│  └── Web canvas (xterm.js, portais, notas)   │
-└──────────────────────────────────────────────┘
-         │ porta 9620
-         ▼
-  http://192.168.1.42:9620  ← amigos na LAN
-  http://100.x.x.x:9620     ← amigos via Tailscale
-```
+### O que já funciona
 
-**Setup:**
+- Canvas nativo macOS e canvas no navegador.
+- Terminais reais, replay de sessão e journals persistentes.
+- Notas Markdown, checklists, cadeias de notas e anexos de imagem.
+- Comunicação entre agentes com `ask`, `list` e `check`.
+- Papel **Rainha** para coordenar conexões e terminais no workspace.
+- Portais automatizáveis: navegar, avaliar JavaScript, clicar, preencher,
+  enviar teclas, screenshot e PDF.
+- Salas, convites, presença, missões, decisões, entregas e memória de workspace.
+- Hub opcional para colaboração remota, sem expor PTY ou paths locais.
 
-```bash
-# 1. Build
-git clone https://github.com/AElise08/colmeia.git
-cd colmeia
-./scripts/build-app.sh
+### Começar localmente
 
-# 2. Roda
-open dist/Colmeia.app
-
-# 3. Compartilhe o link
-# Na LAN: http://$(ipconfig getifaddr en0):9620
-# Via Tailscale: http://$(tailscale ip -4):9620
-```
-
-O Hub local já serve o canvas web completo: terminal xterm.js, notas com cor
-por pessoa, portal DuckDuckGo, busca, exclusão, presença com cursor remoto.
-
-### Modo B: VPS (compartilhado — modelo atual)
-
-O Engine roda no seu Mac (máxima performance), o Hub roda numa VPS (disponível
-24/7 para outras pessoas).
-
-```
-┌── Seu Mac ──────────┐    ┌── VPS ──────────────────┐
-│  Engine              │◄──►│  colmeia-sync (ponte)   │
-│  App SwiftUI (opc.)  │    │  HubServer (porta 9620) │
-│  colmeia-sync        │    │  └── Web canvas (HTTP)  │
-└──────────────────────┘    └─────────────────────────┘
-                                     │
-                                     ▼
-                     http://vps:9620/join/ABCD  ← qualquer pessoa
-```
-
-**Setup:**
-
-```bash
-# No seu Mac (já tem o app):
-scripts/build-app.sh
-open dist/Colmeia.app
-# Configure no app ou via COLMEIA_HUB_URL/COLMEIA_HUB_TOKEN
-
-# Na VPS, configure o host e o token por ambiente:
-# Roda o Hub (binary ou via systemd)
-colmeia-hub --port 9620 --token SEU_TOKEN
-```
-
-Acesse o link de invite do Hub para entrar na sala pelo navegador.
-
-### Modo C: só VPS, sem Mac
-
-Tudo roda no servidor. Você acessa exclusivamente pelo navegador (Windows,
-Chromebook, celular, qualquer dispositivo).
-
-```
-┌── VPS ───────────────────────────────────────┐
-│  Engine (Linux)                               │
-│  colmeia-sync (localhost)                     │
-│  HubServer (porta 9620)                       │
-│  └── Web canvas completo (xterm.js + tudo)    │
-└───────────────────────────────────────────────┘
-         │
-         ▼
-  http://vps:9620  ← qualquer dispositivo, qualquer lugar
-```
-
-**Setup:**
-
-```bash
-# Na VPS (Ubuntu/Debian):
-sudo apt install swift          # ou baixe o toolchain
-swift build -c release
-scp .build/release/colmeia-engine vps:/usr/local/bin/
-scp .build/release/ColmeiaHub  vps:/usr/local/bin/
-
-# systemd service para o Engine
-cat > /etc/systemd/system/colmeia-engine.service <<'EOF'
-[Unit]
-Description=Colmeia Engine
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/colmeia-engine --root /var/lib/colmeia
-Restart=always
-User=colmeia
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# systemd service para o Hub
-cat > /etc/systemd/system/colmeia-hub.service <<'EOF'
-[Unit]
-Description=Colmeia Hub
-After=colmeia-engine.service
-
-[Service]
-ExecStart=/usr/local/bin/colmeia-hub --port 9620
-Restart=always
-User=colmeia
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-**⚠️ Limitações do modo C (só navegador):**
-- Sem app nativo: sem SwiftTerm (emulador mais rápido), sem notificações macOS, sem atalhos Cmd
-- Latência de rede: tecla → echo visual ~20-50ms (vs 0ms local)
-- Depende de o VPS estar rodando 24/7
-
----
-
-## Para humanos: como usar
-
-### Canvas web (navegador)
-
-| Botão | O que faz |
-|---|---|
-| **Terminal** | Cria um terminal novo (xterm.js, shell real) |
-| **Nota** | Cria uma nota colorida (cor por autor) |
-| **Navegador** | Abre um portal DuckDuckGo embutido |
-| **Conectar** | Link `colmeia://join/...` para abrir no Mac |
-| **Buscar** | Filtra nós por nome, URL ou conteúdo de nota |
-| **Excluir** | Remove nó ou conexão selecionado |
-| **Enquadrar** | Centraliza a vista no nó selecionado |
-
-Atalhos de teclado:
-- `Delete`/`Backspace` — exclui nó selecionado
-- Click + drag — move nós
-- Dois cliques em nota — edita conteúdo
-- Scroll — zoom no canvas
-
-### App Mac nativo
-
-O app nativo (SwiftUI) tem tudo que o web canvas tem, mais:
-- Emulador terminal SwiftTerm (0ms latência)
-- Atalhos macOS (Cmd+C/V, Cmd+Q, Cmd+W, etc.)
-- Notificações nativas (watchdog, menção, aprovação)
-- Drag-and-drop do Finder
-- Desempenho de desenho acelerado por Metal
-- Múltiplos andares (floors) com viewport próprio
-
----
-
-## Para agentes: protocolo
-
-Agentes conectam via protocolo NDJSON sobre TCP (socket local ou remoto).
-
-### Conectar
-
-```json
-{"request":{"id":"h1","method":"hello","params":{"protocol_version":"0.1","client":"meu-agente","author":"humano"}}}
-```
-
-### Listar nós
-
-```json
-{"request":{"id":"h2","method":"workspace.list"}}
-```
-Resposta:
-```json
-{"response":{"id":"h2","result":[{"id":"01J...","nome":"Meu Workspace"}]}}
-```
-
-### Criar nó
-
-```json
-{"request":{"id":"h3","method":"node.create","params":{"workspace_id":"01J...","tipo":"terminal","nome":"meu-shell","floor":null}}}
-```
-
-### Escrever nota
-
-```json
-{"request":{"id":"h4","method":"note.replace","params":{"workspace_id":"01J...","node_id":"01K...","conteudo":"# Análise\nResultado: sucesso\n"}}}
-```
-
-### Ler nota
-
-```json
-{"request":{"id":"h5","method":"note.get","params":{"workspace_id":"01J...","node_id":"01K..."}}}
-```
-
-### Executar comando (session.input)
-
-```json
-{"request":{"id":"h6","method":"session.input","params":{"session_id":"01K...","data_b64":"bHMgLWxhCg=="}}}
-```
-
-### Escutar eventos (tempo real)
-
-```json
-{"request":{"id":"h7","method":"subscribe","params":{"topics":["session.output","session.state","document.op"]}}}
-```
-
-Eventos chegam como:
-```json
-{"event":{"topic":"session.output","params":{"session_id":"01K...","data_b64":"dG90YWwgMzI="}}}
-```
-
-### Exemplo completo (Python)
-
-```python
-import socket, json, base64
-
-sock = socket.socket()
-sock.connect(("127.0.0.1", 9622))
-
-def send(obj):
-    sock.sendall((json.dumps(obj) + "\n").encode())
-
-# Hello
-send({"request": {"id": "1", "method": "hello",
-      "params": {"protocol_version": "0.1", "client": "bot", "author": "humano"}}})
-# Aguarda response do hello...
-
-# Lista workspaces
-send({"request": {"id": "2", "method": "workspace.list"}})
-
-# Cria nota
-send({"request": {"id": "3", "method": "note.replace",
-      "params": {"workspace_id": "01J...", "node_id": "01K...",
-                 "conteudo": "Nota criada por um agente!"}}})
-```
-
----
-
-## Arquitetura
-
-```text
-┌──────────────┐     socket unix      ┌──────────────┐
-│  App Mac     │◄────────────────────►│   Engine      │
-│  (SwiftUI)   │     NDJSON           │   (Swift)     │
-│  CanvasView  │                      │   PTYs        │
-│  SwiftTerm   │                      │   Journal     │
-└──────┬───────┘                      │   Document    │
-       │                              └──────┬───────┘
-       │ TCP/9622                            │
-       ▼                                     ▼
-┌──────────────┐                    ┌──────────────┐
-│  Web Canvas   │                   │  colmeia-sync │
-│  (xterm.js)   │                   │  (ponte)      │
-│  Hub HTTP     │                   │  Engine↔Hub   │
-└──────┬───────┘                    └──────┬───────┘
-       │                                    │
-       ▼ TCP/9620                           ▼ TCP/9620
-┌─────────────────────────────────────────────────────┐
-│                   Hub Server                         │
-│  (WebSocket, salas, presença, snapshot, forward)     │
-│  ┌─────┐ ┌─────┐ ┌─────┐                             │
-│  │Sala1│ │Sala2│ │Sala3│ ← RoomStore, WorkspaceStore │
-│  └─────┘ └─────┘ └─────┘                             │
-└─────────────────────────────────────────────────────┘
-```
-
-### Componentes
-
-| Componente | Papel | Roda em |
-|---|---|---|
-| **Engine** | Dono de PTYs, journal, documento, sessões | Mac ou VPS |
-| **HubServer** | Servidor de salas, WebSocket, snapshots, presença | VPS ou Mac |
-| **colmeia-sync** | Ponte bidirecional Engine ↔ Hub | Mac |
-| **App (SwiftUI)** | Canvas nativo macOS | Mac |
-| **Web canvas** | Canvas no navegador (xterm.js, CSS, JS) | Navegador |
-| **CLI (`colmeia`)** | Companion de terminal (ask, note, status) | Mac ou VPS |
-
-### Protocolo
-
-O protocolo é NDJSON sobre TCP, com três tipos de mensagem:
-- **`request`** — chamada de método (hello, node.create, session.input, etc.)
-- **`response`** — resposta a um request (ok com result, ou error)
-- **`event`** — evento assíncrono (session.output, document.op, presence.update)
-
-Todas as mensagens são delimitadas por `\n` (0x0A). Binário (output de PTY)
-vai como base64 nos campos `data_b64`.
-
----
-
-## Build & desenvolvimento
-
-### Segurança antes de publicar
-
-- Nunca commitamos tokens, chaves SSH, certificados, `.env`, workspaces ou `dist/`.
-- O Hub público deve usar HTTPS/WSS atrás de um proxy TLS.
-- O Engine local pode acessar PTYs e arquivos; não exponha o socket do Engine na internet.
-- Configure `HUB_TOKEN`, `COLMEIA_HUB_HOST` e `COLMEIA_REMOTE_SSH_TARGET` apenas por ambiente.
-- O código é open source, mas a infraestrutura de produção não é parte do repositório.
+Requisitos: macOS 15+, Swift 6 e Command Line Tools. Chrome ou Chromium é
+necessário apenas para automação de portais.
 
 ```bash
 git clone https://github.com/AElise08/colmeia.git
 cd colmeia
 
-# Build de debug
+# Tudo em modo debug
 swift build
 
-# Build de release
-swift build -c release
+# Testes desta máquina
+./test.sh
 
-# Build o app .app
-scripts/build-app.sh
-
-# Roda
+# App macOS empacotado
+./scripts/build-app.sh
 open dist/Colmeia.app
-
-# Testes
-./test.sh          # NÃO use `swift test` puro (veja abaixo)
-
-# Smoke test opcional da automação real do portal (requer Chrome instalado)
-COLMEIA_BROWSER_TESTS=1 ./test.sh --filter AgentCapabilitiesTests
 ```
 
-**⚠️ `swift test` puro não funciona:** o CommandLineTools 6.2.4 vem sem o módulo
-`_Testing_Foundation.framework/Modules`, quebrando `import Testing`. O
-`./test.sh` contorna com `-F` + `-disable-cross-import-overlays` + rpath.
+`./test.sh` é o comando de teste suportado neste ambiente. O `swift test` puro
+não encontra o framework `Testing` no Command Line Tools instalado.
 
-### Criar um invite para compartilhar
+### Linha de comando
 
-No app Mac, crie uma sala e copie o link de invite. O link tem formato:
-```
-http://vps:9620/join/01KYQC3NRVZ4T8Q795PFBM7SK1/01KYQD3EY56NJY4J8M2YF24PF4
-```
+Dentro de um terminal gerenciado, a CLI recebe o contexto do workspace
+automaticamente.
 
-Ou via CLI:
 ```bash
-colmeia room create --nome "minha-sala"
+# Descobrir o workspace e os agentes
+colmeia list
+colmeia status --json
+
+# Ler output de outro agente
+colmeia check "nome-do-agente" --stream
+
+# Trabalhar com contexto persistente
+colmeia note "Decisão: usar o contrato v2"
+colmeia note connected
+colmeia note chain <node-id>
+
+# Criar e automatizar um portal
+colmeia portal open https://example.com --nome exemplo
+colmeia portal command <portal-id> eval "document.title"
+
+# Coordenar como Rainha
+colmeia connect <node-a> <node-b>
 ```
+
+Use `colmeia --help` para a referência completa dos comandos.
+
+### Arquitetura
+
+```text
+macOS app / CLI                    Browser
+      |                               |
+      +----- NDJSON / WebSocket ------+
+                      |
+                Colmeia Engine
+          PTYs, journals, document, notes
+                      |
+                 optional sync
+                      |
+                 Colmeia Hub
+    rooms, invites, presence, snapshots, events
+```
+
+O Engine é local e confiável pela pessoa operadora. Ele não deve ser exposto
+diretamente à internet. O Hub é uma camada de coordenação: para uso externo,
+coloque-o atrás de TLS, autenticação, rate limiting e backups.
+
+### Desenvolvimento
+
+```bash
+# Todos os produtos
+swift build
+
+# Testes determinísticos
+./test.sh
+
+# Smoke test de Chrome para portais automatizados
+COLMEIA_BROWSER_TESTS=1 ./test.sh --filter AgentCapabilitiesTests
+
+# Checagem de performance sem GUI
+./scripts/benchmark.sh
+```
+
+Leia [`docs/SPEC.md`](docs/SPEC.md) para o contrato de segurança, arquitetura e
+protocolo. O repositório tem scripts de deploy, mas credenciais e infraestrutura
+de produção devem ficar fora do Git.
+
+### Licença e marca
+
+O código é [MIT](LICENSE). Isso inclui uso comercial: qualquer pessoa pode criar
+um fork ou serviço comercial baseado no código. MIT não pode proibir esse uso.
+
+Para proteger a identidade do projeto sem fechar o código, a política em
+[`TRADEMARKS.md`](TRADEMARKS.md) reserva o nome e a identidade visual Colmeia
+contra uso que finja ser a versão oficial. Ela não impede forks comerciais; ela
+impede que eles se apresentem como o Colmeia oficial.
 
 ---
 
-## Licença
+<a id="english"></a>
+## English
 
-Apache-2.0 — veja [LICENSE](LICENSE).
+### What It Is
+
+Colmeia is a local-first visual workspace for coordinating technical work across
+people and AI agents. It puts terminals, notes, connections, web portals,
+missions, decisions, and deliveries in one spatial workspace instead of
+scattering context across windows and chat threads.
+
+The local Engine owns PTYs, journals, and private workspace data. The optional
+Hub coordinates rooms, invites, presence, and sanitized shared state without
+turning a remote service into shell access.
+
+### Highlights
+
+- Native macOS canvas and browser canvas.
+- Real terminals, replay, journals, notes, image assets, and checklists.
+- Agent coordination with `ask`, `list`, `check`, and the **Queen** role.
+- Browser portals with navigation, JavaScript evaluation, click, fill, key,
+  screenshot, and PDF automation.
+- Collaborative rooms, invitations, missions, decisions, deliveries, and memory.
+- Local-first by default; remote collaboration is optional.
+
+### Quick Start
+
+```bash
+git clone https://github.com/AElise08/colmeia.git
+cd colmeia
+swift build
+./test.sh
+./scripts/build-app.sh
+open dist/Colmeia.app
+```
+
+Use `colmeia --help` for the agent CLI and see [`docs/SPEC.md`](docs/SPEC.md)
+for the protocol and security model.
+
+### Security Model
+
+Keep the Engine private. It can run terminals and access local workspace state.
+When running a Hub for other people, use HTTPS/WSS, authentication, a dedicated
+service user, rate limits, backups, and a reverse proxy. Never commit tokens,
+SSH keys, certificates, `.env` files, or production workspace data.
+
+### License And Name
+
+Colmeia is released under the [MIT License](LICENSE). MIT allows commercial use;
+it cannot prevent commercial forks. The project name and visual identity are
+covered by the non-code policy in [`TRADEMARKS.md`](TRADEMARKS.md), which prevents
+misrepresentation as the official Colmeia project without restricting the code.
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. Before sending a change, run `./test.sh`
+and avoid including generated files, credentials, local workspace data, or
+production infrastructure details.

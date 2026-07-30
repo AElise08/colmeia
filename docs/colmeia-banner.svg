@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Colmeia</title>
+  <desc id="desc">An abstract honeycomb network for coordinating people and AI agents.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#151009"/>
+      <stop offset="0.55" stop-color="#2a1d0b"/>
+      <stop offset="1" stop-color="#100e0a"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe29a"/>
+      <stop offset="0.5" stop-color="#f7b928"/>
+      <stop offset="1" stop-color="#cf7415"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1200" height="420" fill="url(#background)" rx="30"/>
+  <g fill="none" stroke="#f7b928" stroke-opacity=".26" stroke-width="2">
+    <path d="M87 87h66l33 57-33 57H87l-33-57z"/>
+    <path d="M219 87h66l33 57-33 57h-66l-33-57z"/>
+    <path d="M153 201h66l33 57-33 57h-66l-33-57z"/>
+    <path d="M1014 87h66l33 57-33 57h-66l-33-57z"/>
+    <path d="M882 87h66l33 57-33 57h-66l-33-57z"/>
+    <path d="M948 201h66l33 57-33 57h-66l-33-57z"/>
+  </g>
+  <g stroke="#f7b928" stroke-opacity=".38" stroke-width="2">
+    <path d="M319 210H470"/>
+    <path d="M730 210h151"/>
+    <path d="M600 87v88"/>
+    <path d="M600 245v88"/>
+  </g>
+  <g filter="url(#glow)">
+    <path d="M535 142h130l40 68-40 68H535l-40-68z" fill="#271a08" stroke="url(#gold)" stroke-width="5"/>
+    <path d="M581 175c22-20 49-20 71 0" fill="none" stroke="#ffe29a" stroke-width="8" stroke-linecap="round"/>
+    <path d="M566 205c31 25 67 25 98 0" fill="none" stroke="#f7b928" stroke-width="9" stroke-linecap="round"/>
+    <circle cx="568" cy="218" r="8" fill="#ffe29a"/>
+    <circle cx="632" cy="218" r="8" fill="#ffe29a"/>
+  </g>
+  <text x="600" y="374" fill="#fff5d9" font-family="ui-rounded, system-ui, sans-serif" font-size="30" font-weight="700" letter-spacing="8" text-anchor="middle">COLMEIA</text>
+</svg>
