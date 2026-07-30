@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import Darwin
 import ColmeiaKit
 
 enum ConnectionStatus: Equatable {
@@ -14,6 +16,28 @@ enum ConnectionStatus: Equatable {
 final class EngineConnection: ObservableObject {
     @Published private(set) var status: ConnectionStatus = .conectando
 
+    /// `engine_version` do último hello (§6.3) — comparada com a versão do app.
+    @Published private(set) var engineVersion: String?
+    /// Reciclagem (§3.3) em curso: shutdown gracioso → respawn → reconexão.
+    @Published private(set) var reciclandoEngine = false
+    /// Falha na reciclagem (ex.: engine velho rejeitou o shutdown) — para a UI exibir.
+    @Published var erroReciclagem: String?
+
+    /// §3.3/§6.3 — engine sobreviveu a um upgrade dos binários: métodos novos
+    /// falhariam silenciosamente. Não bloqueia o uso; a UI oferece a reciclagem.
+    var engineDesatualizado: Bool {
+        guard let engineVersion else { return false }
+        return engineVersion != ColmeiaVersion.string
+    }
+
+    var appDesatualizado: Bool {
+        guard let engineVersion else { return false }
+        return ColmeiaVersion.compare(ColmeiaVersion.string, engineVersion) == .orderedAscending
+    }
+
+    /// Versão do próprio app (fonte de verdade única no Kit).
+    var appVersion: String { ColmeiaVersion.string }
+
     /// Eventos que não são `session.output` (baixa frequência) — consumidos pelo AppStore.
     var onEvent: ((EventMessage) -> Void)?
     /// Chamado a cada (re)conexão bem-sucedida, após o hello — re-subscribe/re-attach.
@@ -23,8 +47,15 @@ final class EngineConnection: ObservableObject {
 
     private var client: SocketClient?
     private var loopTask: Task<Void, Never>?
-    private var engineLaunched = false
+    /// Processo do engine lançado pelo app — nulo se engine externo ou já morto.
+    private var engineProcess: Process?
+    /// Última tentativa de spawn — o relançamento é limitado a 1×/2s (sem storm)
+    /// e volta a tentar sozinho depois (necessário na reciclagem: o processo
+    /// antigo ainda pode segurar o lock por um instante).
+    private var lastEngineLaunch: Date = .distantPast
     private let socketPath: String
+    /// Se true, stop() também mata o processo do engine.
+    private var killEngineOnStop = true
 
     init(socketPath: String = ColmeiaPaths.socketPath()) {
         self.socketPath = socketPath
@@ -40,6 +71,23 @@ final class EngineConnection: ObservableObject {
         loopTask = nil
         client?.close()
         client = nil
+        if killEngineOnStop, let proc = engineProcess {
+            engineProcess = nil
+            let pid = proc.processIdentifier
+            ChildPIDTracker.remove(pid)
+            guard proc.isRunning else { return }
+            proc.terminate()
+            let deadline = Date().addingTimeInterval(3)
+            while proc.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if proc.isRunning {
+                kill(pid, SIGKILL)
+                Thread.sleep(forTimeInterval: 0.1)
+                var status: Int32 = 0
+                waitpid(pid, &status, WNOHANG)
+            }
+        }
     }
 
     func registerOutputHandler(session: ULID, _ handler: @escaping (SessionOutputTopicPayload) -> Void) {
@@ -79,11 +127,13 @@ final class EngineConnection: ObservableObject {
             let candidate = SocketClient()
             do {
                 try candidate.connect(to: socketPath)
-                _ = try await candidate.hello(client: "canvas-ui")
+                let hello = try await candidate.hello(client: "canvas-ui")
                 client = candidate
                 tentativa = 0
                 jaConectou = true
-                engineLaunched = false
+                // §6.3 — engine_version não é decorativa: divergência da versão do
+                // app aciona o banner de reciclagem (§3.3) na UI. Não bloqueia.
+                engineVersion = hello.engineVersion
                 status = .conectado
                 await onConnected?()
                 for await event in candidate.events {
@@ -95,8 +145,9 @@ final class EngineConnection: ObservableObject {
             client = nil
             if Task.isCancelled { break }
             tentativa += 1
-            if !engineLaunched {
-                engineLaunched = launchEngine()
+            if Date().timeIntervalSince(lastEngineLaunch) > 2 {
+                lastEngineLaunch = Date()
+                _ = launchEngine()
             }
             let delay: Double
             if jaConectou {
@@ -121,16 +172,101 @@ final class EngineConnection: ObservableObject {
         onEvent?(event)
     }
 
+    // MARK: - Reciclagem do engine desatualizado (§3.3/§6.3)
+
+    /// Shutdown gracioso (flush; sessões ativas ENCERRADAS — journals preservados,
+    /// a UI avisa antes) seguido de respawn do binário novo. A reconexão fica com
+    /// o runLoop: o hello seguinte re-verifica a versão e o banner some sozinho
+    /// quando ela bate.
+    func recycleEngine() async {
+        guard !reciclandoEngine else { return }
+        guard !appDesatualizado else {
+            erroReciclagem = "O engine já é mais novo. Reabra o Colmeia para atualizar a interface."
+            return
+        }
+        reciclandoEngine = true
+        erroReciclagem = nil
+        defer { reciclandoEngine = false }
+        if let client {
+            do {
+                // Aguarda a response; a conexão CAIR antes dela também vale como
+                // "desceu" (connectionClosed) — os dois caminhos seguem adiante.
+                _ = try await client.call(.engineShutdown, params: EngineShutdownParams(confirmar: true))
+            } catch let error as ProtocolError {
+                // Engine respondeu recusando (ex.: velho demais para o método):
+                // segue vivo segurando o lock — não adianta respawnar por cima.
+                erroReciclagem = "engine recusou o shutdown: \(error.message)"
+                return
+            } catch {
+                // Erro de transporte = engine caiu no meio — exatamente o que queríamos.
+            }
+            client.close()
+        }
+        client = nil
+        engineVersion = nil
+        // O processo antigo solta socket+lock ~200ms após a response (§6.4);
+        // esperar um instante evita um spawn que morre em "já está rodando".
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        lastEngineLaunch = Date()
+        _ = launchEngine()
+
+        // Spawn aceito não significa reciclagem concluída: só o novo hello
+        // confirma que o daemon esperado realmente assumiu o socket.
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline {
+            if status == .conectado, engineVersion == ColmeiaVersion.string {
+                erroReciclagem = nil
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        erroReciclagem = "O engine não voltou a conectar. Tente reabrir o Colmeia."
+    }
+
+    /// Abre o bundle atual do disco antes de encerrar esta interface antiga.
+    /// O engine permanece vivo; somente o processo visual é substituído.
+    func relaunchApplication() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(
+            at: Bundle.main.bundleURL,
+            configuration: configuration
+        ) { [weak self] _, error in
+            DispatchQueue.main.async {
+                if let error {
+                    self?.erroReciclagem = "Não foi possível reabrir o Colmeia: \(error.localizedDescription)"
+                } else {
+                    NSApplication.shared.terminate(nil)
+                }
+            }
+        }
+    }
+
     // MARK: - Lançamento do engine (ordem da tarefa: app → .build do projeto → PATH)
 
     private func launchEngine() -> Bool {
+        // Se já temos um engine vivo, não spawna outro
+        if let existing = engineProcess, existing.isRunning { return true }
         guard let binary = Self.findEngineBinary() else { return false }
         let process = Process()
         process.executableURL = binary
+        var arguments = ["--tcp-port", "9622"]
+        if socketPath.hasSuffix("/engine.sock") {
+            let root = URL(fileURLWithPath: socketPath).deletingLastPathComponent().path
+            arguments = ["--root", root] + arguments
+        }
+        process.arguments = arguments
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.engineProcess = nil
+            }
+        }
         do {
             try process.run()
+            engineProcess = process
+            ChildPIDTracker.add(process.processIdentifier)
             return true
         } catch {
             return false

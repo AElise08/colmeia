@@ -43,6 +43,8 @@ struct ApprovalsPanel: View {
             }
         }
         .frame(width: 520)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Fila de aprovações, \(store.pendingApprovals.count) pendentes")
     }
 }
 
@@ -71,6 +73,7 @@ private struct ApprovalRow: View {
                     Label("Ir para o nó", systemImage: "arrow.right.circle")
                         .font(.caption)
                 }
+                .accessibilityHint("Fecha a fila e foca o terminal que pediu esta aprovação")
             }
 
             Text(approval.resumo)
@@ -97,6 +100,8 @@ private struct ApprovalRow: View {
         .padding(12)
         .background(Color.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.red.opacity(0.25), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Aprovação pendente de \(approval.nodeNome), \(approval.resumo), \(idade)")
     }
 
     private var idade: String {

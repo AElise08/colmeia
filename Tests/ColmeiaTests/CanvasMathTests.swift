@@ -77,6 +77,25 @@ struct CanvasMathTests {
         #expect(abs(volta.y - tela.y) < 1e-9)
     }
 
+    @Test func textoSoltoNasceCompactoMasComAreaDeInteracao() {
+        let curto = CanvasMath.tamanhoInicialDeTexto("oi")
+        #expect(curto.w >= 32)
+        #expect(curto.h >= 24)
+
+        let longo = CanvasMath.tamanhoInicialDeTexto("uma linha de texto bem maior")
+        #expect(longo.w > curto.w)
+
+        let multilinha = CanvasMath.tamanhoInicialDeTexto("a\nb\nc")
+        #expect(multilinha.h > curto.h)
+    }
+
+    @Test func textoSoltoTemLimitesPrevisiveis() {
+        let enorme = CanvasMath.tamanhoInicialDeTexto(String(repeating: "x", count: 10_000))
+        #expect(enorme.w == 720)
+        let muitasLinhas = CanvasMath.tamanhoInicialDeTexto(Array(repeating: "x", count: 100).joined(separator: "\n"))
+        #expect(muitasLinhas.h == 480)
+    }
+
     @Test func ancorasDeConexaoNasBordas() {
         let a = CGRect(x: 0, y: 0, width: 100, height: 100)
         let b = CGRect(x: 300, y: 0, width: 100, height: 100)

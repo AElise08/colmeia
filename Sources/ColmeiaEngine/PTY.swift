@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import ColmeiaKit
 
 /// PTY + processo (§9.1). Spawn sem fork manual: posix_spawn com o slave aberto por
@@ -37,6 +41,7 @@ enum PTY {
         cols: Int,
         rows: Int
     ) throws -> PTYHandle {
+        let resolvedExecutable = executablePath(executable, environment: environment) ?? executable
         let master = posix_openpt(O_RDWR | O_NOCTTY)
         guard master >= 0 else { throw PTYError.allocFailed("posix_openpt", errno) }
         guard grantpt(master) == 0, unlockpt(master) == 0, let slaveC = ptsname(master) else {
@@ -49,7 +54,24 @@ enum PTY {
         var ws = winsize(
             ws_row: UInt16(clamping: rows), ws_col: UInt16(clamping: cols),
             ws_xpixel: 0, ws_ypixel: 0)
-        _ = ioctl(master, TIOCSWINSZ, &ws)
+        // No Darwin, configurar apenas o master antes da primeira abertura do
+        // slave não basta: a abertura feita pela file-action pode reinicializar
+        // a geometria para 0×0. Pré-abrir o slave sem adquirir controlling tty,
+        // aplicar nele e fechar preserva o winsize que o filho verá no primeiro
+        // ioctl — antes de o TUI ter qualquer chance de desenhar.
+        let sizingSlave = open(slavePath, O_RDWR | O_NOCTTY)
+        guard sizingSlave >= 0 else {
+            let code = errno
+            close(master)
+            throw PTYError.allocFailed("open slave for sizing", code)
+        }
+        let sizingResult = ioctl(sizingSlave, TIOCSWINSZ, &ws)
+        let sizingError = errno
+        guard sizingResult == 0 else {
+            close(sizingSlave)
+            close(master)
+            throw PTYError.allocFailed("TIOCSWINSZ slave", sizingError)
+        }
 
         var fileActions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&fileActions)
@@ -65,7 +87,7 @@ enum PTY {
         defer { posix_spawnattr_destroy(&attr) }
         posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID_FLAG | POSIX_SPAWN_CLOEXEC_DEFAULT_FLAG)
 
-        var argv: [UnsafeMutablePointer<CChar>?] = ([executable] + args).map { strdup($0) }
+        var argv: [UnsafeMutablePointer<CChar>?] = ([resolvedExecutable] + args).map { strdup($0) }
         argv.append(nil)
         var envp: [UnsafeMutablePointer<CChar>?] = environment.map { strdup("\($0.key)=\($0.value)") }
         envp.append(nil)
@@ -75,11 +97,19 @@ enum PTY {
         }
 
         var pid: pid_t = 0
-        let rc = posix_spawnp(&pid, executable, &fileActions, &attr, argv, envp)
+        let rc = posix_spawnp(&pid, resolvedExecutable, &fileActions, &attr, argv, envp)
         guard rc == 0 else {
+            close(sizingSlave)
             close(master)
-            throw PTYError.spawnFailed(executable, rc)
+            throw PTYError.spawnFailed(resolvedExecutable, rc)
         }
+        // posix_spawn só retorna depois de aplicar o addopen do slave no filho.
+        // Até aqui o descritor auxiliar precisa permanecer aberto: fechar o
+        // último slave antes do spawn faz o Darwin voltar a geometria para 0×0.
+        close(sizingSlave)
+        // Também mantém o master sincronizado para resizes imediatamente após
+        // o spawn; neste ponto o slave já foi aberto pelo processo.
+        _ = ioctl(master, TIOCSWINSZ, &ws)
         return PTYHandle(master: master, pid: pid, slavePath: slavePath)
     }
 
@@ -106,6 +136,12 @@ enum PTY {
             ws_xpixel: 0, ws_ypixel: 0)
         _ = ioctl(master, TIOCSWINSZ, &ws)
         _ = kill(-pid, SIGWINCH)
+    }
+
+    static func size(master: Int32) -> (cols: Int, rows: Int)? {
+        var ws = winsize()
+        guard ioctl(master, TIOCGWINSZ, &ws) == 0 else { return nil }
+        return (Int(ws.ws_col), Int(ws.ws_row))
     }
 
     /// Sinaliza o grupo (o filho é session leader: pgid == pid); fallback para o pid.

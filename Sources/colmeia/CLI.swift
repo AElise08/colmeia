@@ -28,9 +28,15 @@ struct CLIContext {
     let rawWorkspaceID: String?
     let workspaceID: ULID?
     let sessionID: ULID?
+    let hubToken: String?
 
-    init(environment: [String: String] = ProcessInfo.processInfo.environment) {
-        socketPath = ColmeiaPaths.socketPath(environment: environment)
+    init(socketPath: String? = nil, hubToken: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.socketPath = socketPath
+            ?? environment["COLMEIA_SOCKET_PATH"]
+            ?? environment["COLMEIA_SOCKET"]
+            ?? environment["COLMEIA_HUB"]
+            ?? ColmeiaPaths.socketPath(environment: environment)
+        self.hubToken = hubToken ?? environment["COLMEIA_HUB_TOKEN"]
         rawNodeID = environment[ColmeiaEnv.nodeID]
         nodeID = rawNodeID.flatMap(ULID.init)
         rawWorkspaceID = environment[ColmeiaEnv.workspaceID]
@@ -85,7 +91,7 @@ func connectEngine(_ context: CLIContext) async throws -> SocketClient {
             watchdogSeconds: 10,
             expiry: CLIFailure(code: CLIExit.contexto, message: "engine não respondeu ao handshake em 10s")
         ) {
-            try await client.hello(client: "cli", author: context.author)
+            try await client.hello(client: "cli", author: context.author, token: context.hubToken)
         }
     } catch let failure as CLIFailure {
         client.close()

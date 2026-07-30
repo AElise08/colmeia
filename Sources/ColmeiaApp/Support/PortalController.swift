@@ -6,6 +6,8 @@ import ColmeiaKit
 /// Normalização de URL digitada no portal: sem esquema ganha https://; about:blank
 /// passa; espaço ou lixo → nil (o campo volta ao valor anterior).
 enum PortalURL {
+    static let paginaInicial = "https://duckduckgo.com/"
+
     static func normalizar(_ bruto: String) -> String? {
         let aparado = bruto.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !aparado.isEmpty else { return nil }
@@ -14,7 +16,13 @@ enum PortalURL {
         if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
             return URL(string: aparado) != nil ? aparado : nil
         }
-        guard !aparado.contains(" ") else { return nil }
+        // Uma frase sem esquema é busca, não URL inválida.
+        if aparado.contains(" ") {
+            guard !lower.contains("://"),
+                  let query = aparado.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+            else { return nil }
+            return "https://duckduckgo.com/?q=\(query)"
+        }
         let candidata = "https://" + aparado
         return URL(string: candidata) != nil ? candidata : nil
     }

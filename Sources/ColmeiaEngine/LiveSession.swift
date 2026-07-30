@@ -7,6 +7,11 @@ struct QueuedMessage {
     let deNode: ULID
     let texto: String
     let enqueuedAt: Date
+    /// Aviso do engine (consciência de conexão): entra como evento `system` no journal
+    /// e input com author `sistema`, sem `message.delivered` nem auto-conexão. Usa a
+    /// MESMA fila FIFO — nunca atropela um turno (§14.2).
+    var sistema = false
+    var systemName = "conexao"
 }
 
 /// `colmeia ask` bloqueante: resposta = output do destino desde a injeção até a
@@ -97,16 +102,25 @@ final class LiveSession {
             recent.removeFirst(recent.count - 16 * 1024)
         }
         if chunk.contains(0x07) { belRecente = true }
+        // OSC 0/2 pode atravessar chunks; reexaminar o tail completo evita assumir
+        // framing do PTY e deixa o título disponível aos adapters (§9.2/§10.1).
+        if let title = TerminalControlSequences.lastOSCTitle(in: recent) {
+            tituloOSC = title
+        }
     }
 
     func contexto(ultimoChunk: Data) -> AdapterContexto {
-        AdapterContexto(
+        let contexto = AdapterContexto(
             ultimoChunk: ultimoChunk,
             bufferRecente: TerminalText.decodeLossy(recent),
             silencioSeg: silencioSeg,
             tituloOSC: tituloOSC,
             belRecente: belRecente
         )
+        // BEL é edge-triggered: um único beep é uma pista, não deve transformar
+        // todos os chunks seguintes em "esperando humano" indefinidamente.
+        belRecente = false
+        return contexto
     }
 
     func dto() -> Session {
@@ -124,5 +138,43 @@ final class LiveSession {
             rows: rows,
             estadoDesde: estadoDesde
         )
+    }
+}
+
+/// Parser deliberadamente mínimo para OSC 0/2: título em `ESC ] 0;… BEL` ou
+/// `ESC ] 2;… ESC \\`. Não interpreta outras sequências VT; bytes inválidos são
+/// decodificados lossy, como o restante das heurísticas.
+enum TerminalControlSequences {
+    static func lastOSCTitle(in data: Data) -> String? {
+        let bytes = [UInt8](data)
+        var result: String?
+        var index = 0
+        while index + 3 < bytes.count {
+            guard bytes[index] == 0x1B, bytes[index + 1] == 0x5D,
+                  (bytes[index + 2] == 0x30 || bytes[index + 2] == 0x32),
+                  bytes[index + 3] == 0x3B
+            else { index += 1; continue }
+            let start = index + 4
+            var end = start
+            var foundTerminator = false
+            while end < bytes.count {
+                if bytes[end] == 0x07 {
+                    foundTerminator = true
+                    break
+                }
+                if end + 1 < bytes.count, bytes[end] == 0x1B, bytes[end + 1] == 0x5C {
+                    foundTerminator = true
+                    break
+                }
+                end += 1
+            }
+            if foundTerminator {
+                let title = String(decoding: bytes[start..<end], as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !title.isEmpty { result = String(title.prefix(512)) }
+            }
+            index = max(end + 1, index + 1)
+        }
+        return result
     }
 }

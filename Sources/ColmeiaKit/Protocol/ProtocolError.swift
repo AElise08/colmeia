@@ -24,11 +24,31 @@ public enum ProtocolErrorName: String, Codable, CaseIterable, Sendable {
     case invalid_params
     case confirmation_required
     case internal_error
+    // Multiplayer (Fase 0+)
+    case room_not_found
+    case room_already_exists
+    case member_not_found
+    case member_already_exists
+    case member_revoked
+    case invite_invalid
+    case invite_expired
+    case agent_session_not_found
+    case agent_session_archived
+    case handoff_invalid
+    case handoff_already_pending
+    case conductor_required
+    case grant_not_found
+    case grant_expired
+    case grant_revoked
+    case insufficient_permissions
+    case idempotency_conflict
+    case lease_invalid
+    case lease_expired
 }
 
 /// Corpo de `error` no envelope de response (§6.2). `name` fica como String no wire
 /// porque extensões documentadas são permitidas (§6.6); `known` mapeia para o enum.
-public struct ProtocolError: Error, Codable, Equatable, Sendable, CustomStringConvertible {
+public struct ProtocolError: Error, Codable, Equatable, Sendable, CustomStringConvertible, LocalizedError {
     public var name: String
     public var message: String
 
@@ -45,4 +65,5 @@ public struct ProtocolError: Error, Codable, Equatable, Sendable, CustomStringCo
     }
 
     public var description: String { "\(name): \(message)" }
+    public var errorDescription: String? { description }
 }

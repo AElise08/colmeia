@@ -12,7 +12,27 @@ public enum ColmeiaTopic: String, Codable, CaseIterable, Sendable {
     case noteAppended = "note.appended"
     case routineFired = "routine.fired"
     case floorChanged = "floor.changed"
+    case memoryChanged = "memory.changed"
+    case deliveryChanged = "delivery.changed"
+    case watchdogAlert = "watchdog.alert"
+    case workerArchived = "worker.archived"
     case engineWarning = "engine.warning"
+    // Multiplayer (§6.1)
+    case roomUpdated = "room.updated"
+    case memberJoined = "member.joined"
+    case memberLeft = "member.left"
+    case memberUpdated = "member.updated"
+    case sessionEventAppended = "session_event.appended"
+    case eventAck = "event.ack"
+    case eventReject = "event.reject"
+    case grantIssued = "grant.issued"
+    case grantRevoked = "grant.revoked"
+    case presenceChanged = "presence.changed"
+    case leaseAcquired = "lease.acquired"
+    case leaseRevoked = "lease.revoked"
+    case handoffRequested = "handoff.requested"
+    case handoffAccepted = "handoff.accepted"
+    case conductorChanged = "conductor.changed"
 }
 
 public struct SessionOutputTopicPayload: Codable, Equatable, Sendable {
@@ -37,16 +57,28 @@ public struct SessionStateTopicPayload: Codable, Equatable, Sendable {
     public var sessionID: ULID
     public var estado: SessionEstado
     public var motivo: String?
+    public var nodeID: ULID?
+    public var workspaceID: ULID?
 
     enum CodingKeys: String, CodingKey {
         case estado, motivo
         case sessionID = "session_id"
+        case nodeID = "node_id"
+        case workspaceID = "workspace_id"
     }
 
-    public init(sessionID: ULID, estado: SessionEstado, motivo: String? = nil) {
+    public init(
+        sessionID: ULID,
+        estado: SessionEstado,
+        motivo: String? = nil,
+        nodeID: ULID? = nil,
+        workspaceID: ULID? = nil
+    ) {
         self.sessionID = sessionID
         self.estado = estado
         self.motivo = motivo
+        self.nodeID = nodeID
+        self.workspaceID = workspaceID
     }
 }
 
@@ -100,16 +132,18 @@ public struct NoteAppendedTopicPayload: Codable, Equatable, Sendable {
     public var nodeID: ULID
     public var fonte: Author
     public var resumo: String
+    public var conteudo: String?
 
     enum CodingKeys: String, CodingKey {
-        case fonte, resumo
+        case fonte, resumo, conteudo
         case nodeID = "node_id"
     }
 
-    public init(nodeID: ULID, fonte: Author, resumo: String) {
+    public init(nodeID: ULID, fonte: Author, resumo: String, conteudo: String? = nil) {
         self.nodeID = nodeID
         self.fonte = fonte
         self.resumo = resumo
+        self.conteudo = conteudo
     }
 }
 
@@ -137,6 +171,69 @@ public struct FloorChangedTopicPayload: Codable, Equatable, Sendable {
     }
 }
 
+/// Mudança de memória curada e/ou de sua fila de propostas; conteúdo técnico de
+/// journal não é publicado neste tópico.
+public struct MemoryChangedTopicPayload: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var memory: WorkspaceMemory?
+    public var proposal: MemoryProposal?
+
+    enum CodingKeys: String, CodingKey {
+        case memory, proposal
+        case workspaceID = "workspace_id"
+    }
+
+    public init(workspaceID: ULID, memory: WorkspaceMemory? = nil, proposal: MemoryProposal? = nil) {
+        self.workspaceID = workspaceID
+        self.memory = memory
+        self.proposal = proposal
+    }
+}
+
+public struct DeliveryChangedTopicPayload: Codable, Equatable, Sendable {
+    public var delivery: Delivery
+
+    public init(delivery: Delivery) { self.delivery = delivery }
+}
+
+/// Alerta puramente observável: não pede, cria, mata ou arquiva worker.
+public struct WatchdogAlertTopicPayload: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var sessionID: ULID
+    public var kind: String
+    public var episode: Int
+    public var message: String
+
+    enum CodingKeys: String, CodingKey {
+        case kind, episode, message
+        case workspaceID = "workspace_id"
+        case sessionID = "session_id"
+    }
+
+    public init(workspaceID: ULID, sessionID: ULID, kind: String, episode: Int, message: String) {
+        self.workspaceID = workspaceID
+        self.sessionID = sessionID
+        self.kind = kind
+        self.episode = episode
+        self.message = message
+    }
+}
+
+public struct WorkerArchivedTopicPayload: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var tombstone: WorkerArchiveTombstone
+
+    enum CodingKeys: String, CodingKey {
+        case tombstone
+        case workspaceID = "workspace_id"
+    }
+
+    public init(workspaceID: ULID, tombstone: WorkerArchiveTombstone) {
+        self.workspaceID = workspaceID
+        self.tombstone = tombstone
+    }
+}
+
 /// Condições de §22 (ex.: aviso antes de desconectar cliente sem backpressure).
 public struct EngineWarningTopicPayload: Codable, Equatable, Sendable {
     public var name: String
@@ -145,5 +242,217 @@ public struct EngineWarningTopicPayload: Codable, Equatable, Sendable {
     public init(name: String, message: String) {
         self.name = name
         self.message = message
+    }
+}
+
+// MARK: - Multiplayer topic payloads
+
+public struct RoomUpdatedTopicPayload: Codable, Equatable, Sendable {
+    public var room: Room
+
+    public init(room: Room) { self.room = room }
+}
+
+public struct MemberJoinedTopicPayload: Codable, Equatable, Sendable {
+    public var member: Member
+    public var roomID: ULID?
+    public var roomSeq: UInt64?
+
+    enum CodingKeys: String, CodingKey {
+        case member
+        case roomID = "room_id"
+        case roomSeq = "room_seq"
+    }
+
+    public init(member: Member, roomID: ULID? = nil, roomSeq: UInt64? = nil) {
+        self.member = member
+        self.roomID = roomID
+        self.roomSeq = roomSeq
+    }
+}
+
+public struct MemberLeftTopicPayload: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var memberID: String
+
+    enum CodingKeys: String, CodingKey {
+        case roomID = "room_id"
+        case memberID = "member_id"
+    }
+
+    public init(roomID: ULID, memberID: String) {
+        self.roomID = roomID
+        self.memberID = memberID
+    }
+}
+
+public struct MemberUpdatedTopicPayload: Codable, Equatable, Sendable {
+    public var member: Member
+
+    public init(member: Member) { self.member = member }
+}
+
+public struct SessionEventAppendedTopicPayload: Codable, Equatable, Sendable {
+    public var event: CollaborativeSessionEvent
+
+    public init(event: CollaborativeSessionEvent) { self.event = event }
+}
+
+public struct EventAckTopicPayload: Codable, Equatable, Sendable {
+    public var eventID: ULID
+    public var roomSeq: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case eventID = "event_id"
+        case roomSeq = "room_seq"
+    }
+
+    public init(eventID: ULID, roomSeq: UInt64) {
+        self.eventID = eventID
+        self.roomSeq = roomSeq
+    }
+}
+
+public struct EventRejectTopicPayload: Codable, Equatable, Sendable {
+    public var eventID: ULID
+    public var error: String
+
+    enum CodingKeys: String, CodingKey {
+        case error
+        case eventID = "event_id"
+    }
+
+    public init(eventID: ULID, error: String) {
+        self.eventID = eventID
+        self.error = error
+    }
+}
+
+public struct GrantIssuedTopicPayload: Codable, Equatable, Sendable {
+    public var grant: CapabilityGrant
+
+    public init(grant: CapabilityGrant) { self.grant = grant }
+}
+
+public struct GrantRevokedTopicPayload: Codable, Equatable, Sendable {
+    public var grantID: ULID
+
+    enum CodingKeys: String, CodingKey {
+        case grantID = "grant_id"
+    }
+
+    public init(grantID: ULID) { self.grantID = grantID }
+}
+
+public struct PresenceChangedTopicPayload: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var memberID: String
+    public var connected: Bool
+    public var viewport: Viewport?
+    public var cursor: Ponto?
+    public var displayName: String?
+    public var selectedNodeID: ULID?
+    public var viewingSessionID: ULID?
+    public var lastSeen: Date
+
+    enum CodingKeys: String, CodingKey {
+        case connected, viewport, cursor
+        case displayName = "display_name"
+        case roomID = "room_id"
+        case memberID = "member_id"
+        case selectedNodeID = "selected_node_id"
+        case viewingSessionID = "viewing_session_id"
+        case lastSeen = "last_seen"
+    }
+
+    public init(
+        roomID: ULID, memberID: String,
+        connected: Bool = true,
+        viewport: Viewport? = nil,
+        cursor: Ponto? = nil,
+        displayName: String? = nil,
+        selectedNodeID: ULID? = nil,
+        viewingSessionID: ULID? = nil,
+        lastSeen: Date
+    ) {
+        self.roomID = roomID
+        self.memberID = memberID
+        self.connected = connected
+        self.viewport = viewport
+        self.cursor = cursor
+        self.displayName = displayName
+        self.selectedNodeID = selectedNodeID
+        self.viewingSessionID = viewingSessionID
+        self.lastSeen = lastSeen
+    }
+}
+
+public struct LeaseAcquiredTopicPayload: Codable, Equatable, Sendable {
+    public var lease: LeaseResult
+
+    public init(lease: LeaseResult) { self.lease = lease }
+}
+
+public struct LeaseRevokedTopicPayload: Codable, Equatable, Sendable {
+    public var leaseID: ULID
+
+    enum CodingKeys: String, CodingKey {
+        case leaseID = "lease_id"
+    }
+
+    public init(leaseID: ULID) { self.leaseID = leaseID }
+}
+
+public struct HandoffRequestedTopicPayload: Codable, Equatable, Sendable {
+    public var sessionID: ULID
+    public var handoff: AgentSessionHandoff
+
+    enum CodingKeys: String, CodingKey {
+        case handoff
+        case sessionID = "session_id"
+    }
+
+    public init(sessionID: ULID, handoff: AgentSessionHandoff) {
+        self.sessionID = sessionID
+        self.handoff = handoff
+    }
+}
+
+public struct HandoffAcceptedTopicPayload: Codable, Equatable, Sendable {
+    public var sessionID: ULID
+    public var fromMemberID: String
+    public var toMemberID: String
+    public var scope: HandoffScope
+
+    enum CodingKeys: String, CodingKey {
+        case scope
+        case sessionID = "session_id"
+        case fromMemberID = "from_member_id"
+        case toMemberID = "to_member_id"
+    }
+
+    public init(sessionID: ULID, fromMemberID: String, toMemberID: String, scope: HandoffScope) {
+        self.sessionID = sessionID
+        self.fromMemberID = fromMemberID
+        self.toMemberID = toMemberID
+        self.scope = scope
+    }
+}
+
+public struct ConductorChangedTopicPayload: Codable, Equatable, Sendable {
+    public var sessionID: ULID
+    public var previousConductorID: String?
+    public var newConductorID: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case previousConductorID = "previous_conductor_id"
+        case newConductorID = "new_conductor_id"
+    }
+
+    public init(sessionID: ULID, previousConductorID: String?, newConductorID: String) {
+        self.sessionID = sessionID
+        self.previousConductorID = previousConductorID
+        self.newConductorID = newConductorID
     }
 }

@@ -3,6 +3,21 @@ import AppKit
 import UserNotifications
 import ColmeiaKit
 
+/// Destino completo de uma notificação: o node sozinho não basta quando a janela
+/// está em outro workspace/andar (§19). Campos opcionais preservam notificações
+/// antigas que só conheciam o nó.
+struct NotificationDestination: Equatable, Sendable {
+    var workspaceID: ULID?
+    var floorID: ULID?
+    var nodeID: ULID?
+
+    init(workspaceID: ULID? = nil, floorID: ULID? = nil, nodeID: ULID? = nil) {
+        self.workspaceID = workspaceID
+        self.floorID = floorID
+        self.nodeID = nodeID
+    }
+}
+
 /// Notificações §19 via UserNotifications. UNUserNotificationCenter exige bundle de app;
 /// rodando como executável SPM cru (sem .app) o framework aborta — por isso tudo aqui é
 /// no-op quando `Bundle.main.bundleIdentifier == nil`. Sem som por padrão (§19).
@@ -10,6 +25,10 @@ import ColmeiaKit
 final class NotificationManager: NSObject {
     static let disponivel = Bundle.main.bundleIdentifier != nil
 
+    /// Novo callback com contexto completo. AppStore deve fornecer workspace e
+    /// andar ao criar a notificação; o App troca o contexto antes de focar o nó.
+    var onNavigateToDestination: ((NotificationDestination) -> Void)?
+    /// Compatibilidade com os chamadores atuais durante a migração.
     var onNavigateToNode: ((ULID) -> Void)?
 
     func requestPermission() {
@@ -19,37 +38,70 @@ final class NotificationManager: NSObject {
         center.requestAuthorization(options: [.alert, .badge]) { _, _ in }
     }
 
-    func notifyAprovacao(_ approval: Approval, nodeID: ULID?) {
+    func notifyAprovacao(
+        _ approval: Approval,
+        nodeID: ULID?,
+        destination: NotificationDestination? = nil
+    ) {
         deliver(
             title: "Aprovação pendente — \(approval.nodeNome)",
             body: approval.resumo,
-            nodeID: nodeID
+            destination: destination ?? NotificationDestination(nodeID: nodeID)
         )
     }
 
-    func notifyRotina(_ routine: Routine, resultado: RoutineResultado) {
+    func notifyRotina(
+        _ routine: Routine,
+        resultado: RoutineResultado,
+        destination: NotificationDestination? = nil
+    ) {
         deliver(
             title: "Rotina \(routine.nome)",
             body: resultado == .executada ? "executada" : resultado.rawValue,
-            nodeID: routine.alvo
+            destination: destination ?? NotificationDestination(nodeID: routine.alvo)
         )
     }
 
-    func notifySessaoMorta(node: String, nodeID: ULID, motivo: String?) {
+    func notifySessaoMorta(
+        node: String,
+        nodeID: ULID,
+        motivo: String?,
+        destination: NotificationDestination? = nil
+    ) {
         deliver(
             title: "Sessão morta — \(node)",
             body: motivo ?? "o processo saiu inesperadamente",
-            nodeID: nodeID
+            destination: destination ?? NotificationDestination(nodeID: nodeID)
         )
     }
 
-    private func deliver(title: String, body: String, nodeID: ULID?) {
+    func notifyAndarOrfao(nome: String, destination: NotificationDestination) {
+        deliver(
+            title: "Andar órfão — \(nome)",
+            body: "O worktree existe, mas não estava registrado. Abra o andar para readotá-lo.",
+            destination: destination
+        )
+    }
+
+    func notifyEntrega(resumo: String, destination: NotificationDestination) {
+        deliver(
+            title: "Entrega pronta",
+            body: resumo,
+            destination: destination
+        )
+    }
+
+    private func deliver(title: String, body: String, destination: NotificationDestination) {
         guard Self.disponivel else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        if let nodeID {
-            content.userInfo = ["node_id": nodeID.string]
+        var userInfo: [String: String] = [:]
+        if let workspaceID = destination.workspaceID { userInfo["workspace_id"] = workspaceID.string }
+        if let floorID = destination.floorID { userInfo["floor_id"] = floorID.string }
+        if let nodeID = destination.nodeID { userInfo["node_id"] = nodeID.string }
+        if !userInfo.isEmpty {
+            content.userInfo = userInfo
         }
         let request = UNNotificationRequest(
             identifier: UUID().uuidString,
@@ -68,10 +120,17 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        let raw = userInfo["node_id"] as? String
+        let destination = NotificationDestination(
+            workspaceID: (userInfo["workspace_id"] as? String).flatMap(ULID.init),
+            floorID: (userInfo["floor_id"] as? String).flatMap(ULID.init),
+            nodeID: (userInfo["node_id"] as? String).flatMap(ULID.init)
+        )
         Task { @MainActor in
             NSApp.activate(ignoringOtherApps: true)
-            if let raw, let nodeID = ULID(raw) {
+            if (destination.workspaceID != nil || destination.floorID != nil || destination.nodeID != nil),
+               let onNavigateToDestination = self.onNavigateToDestination {
+                onNavigateToDestination(destination)
+            } else if let nodeID = destination.nodeID {
                 self.onNavigateToNode?(nodeID)
             }
             completionHandler()

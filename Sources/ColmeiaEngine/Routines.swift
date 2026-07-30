@@ -14,6 +14,31 @@ struct RoutinesFile: Codable {
 }
 
 public enum RoutineScheduling {
+    /// Recalcula o estado de agenda sem produzir execuções retroativas (§17.4).
+    /// O único caso que precisa de intervenção humana é `once` vencida e ainda
+    /// não executada; ela não recebe `proxima_execucao` e jamais entra no tick.
+    public static func estadoAgenda(
+        agenda: Agenda, agora: Date, jaExecutou: Bool
+    ) -> RoutineEstadoAgenda {
+        guard agenda.tipo == .once else { return .agendada }
+        if jaExecutou { return .concluida }
+        return agenda.inicio <= agora ? .pendenteAtrasada : .agendada
+    }
+
+    /// Resultado único da religada/criação para manter `estado_agenda` e
+    /// `proxima_execucao` coerentes.
+    public static func recalcular(
+        agenda: Agenda, agora: Date, jaExecutou: Bool, calendar: Calendar = .current
+    ) -> (estado: RoutineEstadoAgenda, proximaExecucao: Date?) {
+        let estado = estadoAgenda(agenda: agenda, agora: agora, jaExecutou: jaExecutou)
+        return (
+            estado,
+            estado == .pendenteAtrasada || estado == .concluida
+                ? nil
+                : proximaExecucao(agenda: agenda, agora: agora, jaExecutou: jaExecutou, calendar: calendar)
+        )
+    }
+
     /// §17.4 — nunca retroativo: recalcula a próxima a partir de `agora`.
     /// `jaExecutou`: para `once`, execução única já feita → nil.
     public static func proximaExecucao(

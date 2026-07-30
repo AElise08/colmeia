@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public enum SocketFramingError: Error, Equatable, CustomStringConvertible {
     case writeFailed(errno: Int32)

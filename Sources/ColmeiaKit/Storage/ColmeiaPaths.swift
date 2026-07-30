@@ -35,6 +35,8 @@ public struct ColmeiaPaths: Sendable {
     public var engineLog: URL { root.appendingPathComponent("engine.log") }
     public var configFile: URL { root.appendingPathComponent("config.json") }
     public var workspacesDir: URL { root.appendingPathComponent("workspaces", isDirectory: true) }
+    /// Salas multiplayer persistentes (§6.1).
+    public var roomsDir: URL { root.appendingPathComponent("rooms", isDirectory: true) }
 
     // MARK: - Por workspace
 
@@ -69,6 +71,11 @@ public struct ColmeiaPaths: Sendable {
         sessionsDir(workspaceID).appendingPathComponent("\(sessionID.string).scrollback")
     }
 
+    /// DTO persistido da sessão (§5.4); centraliza a convenção para manutenção.
+    public func sessionMeta(workspace workspaceID: ULID, session sessionID: ULID) -> URL {
+        sessionsDir(workspaceID).appendingPathComponent("\(sessionID.string).meta.json")
+    }
+
     public func notesDir(_ workspaceID: ULID) -> URL {
         workspaceDir(workspaceID).appendingPathComponent("notes", isDirectory: true)
     }
@@ -86,12 +93,79 @@ public struct ColmeiaPaths: Sendable {
         workspaceDir(workspaceID).appendingPathComponent("floors.json")
     }
 
+    public func memoryDir(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("memory", isDirectory: true)
+    }
+
+    public func deliveriesDir(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("deliveries", isDirectory: true)
+    }
+
+    public func watchdogFile(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("watchdog.json")
+    }
+
+    public func workerArchiveDir(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("archive", isDirectory: true)
+    }
+
+    public func workerArchiveFile(_ workspaceID: ULID) -> URL {
+        workerArchiveDir(workspaceID).appendingPathComponent("workers.json")
+    }
+
+    // MARK: - Multiplayer
+
+    public func roomDir(_ roomID: ULID) -> URL {
+        roomsDir.appendingPathComponent(roomID.string, isDirectory: true)
+    }
+
+    /// Registro da sala (§4.1.1).
+    public func roomFile(_ roomID: ULID) -> URL {
+        roomDir(roomID).appendingPathComponent("room.json")
+    }
+
+    /// Eventos colaborativos append-only da sala (§4.1.4).
+    public func roomEventsFile(_ roomID: ULID) -> URL {
+        roomDir(roomID).appendingPathComponent("events.jsonl")
+    }
+
+    /// Snapshot de estado da sala para recuperação rápida (§6.2).
+    public func roomSnapshotFile(_ roomID: ULID) -> URL {
+        roomDir(roomID).appendingPathComponent("snapshot.json")
+    }
+
+    /// Membros da sala (§4.1.2).
+    public func roomMembersFile(_ roomID: ULID) -> URL {
+        roomDir(roomID).appendingPathComponent("members.json")
+    }
+
+    /// AgentSessions da sala (§4.1.3).
+    public func roomAgentSessionsFile(_ roomID: ULID) -> URL {
+        roomDir(roomID).appendingPathComponent("agent_sessions.json")
+    }
+
+    /// Grants ativos da sala (§4.1.5).
+    public func roomGrantsFile(_ roomID: ULID) -> URL {
+        roomDir(roomID).appendingPathComponent("grants.json")
+    }
+
+    /// §13 — Missões, Frentes, Decisões e Relações da Sala.
+    public func roomMissionsFile(_ roomID: ULID) -> URL {
+        roomDir(roomID).appendingPathComponent("missions.json")
+    }
+
+    /// §11.4 — fila offline durável de mutações remotas.
+    public func roomOutboxFile(_ roomID: ULID) -> URL {
+        roomDir(roomID).appendingPathComponent("outbox.jsonl")
+    }
+
     // MARK: - Criação de diretórios
 
     public func ensureRootLayout() throws {
         let fm = FileManager.default
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         try fm.createDirectory(at: workspacesDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: roomsDir, withIntermediateDirectories: true)
     }
 
     public func ensureWorkspaceLayout(_ workspaceID: ULID) throws {
@@ -99,5 +173,8 @@ public struct ColmeiaPaths: Sendable {
         try fm.createDirectory(at: workspaceDir(workspaceID), withIntermediateDirectories: true)
         try fm.createDirectory(at: sessionsDir(workspaceID), withIntermediateDirectories: true)
         try fm.createDirectory(at: notesDir(workspaceID), withIntermediateDirectories: true)
+        try fm.createDirectory(at: memoryDir(workspaceID), withIntermediateDirectories: true)
+        try fm.createDirectory(at: deliveriesDir(workspaceID), withIntermediateDirectories: true)
+        try fm.createDirectory(at: workerArchiveDir(workspaceID), withIntermediateDirectories: true)
     }
 }

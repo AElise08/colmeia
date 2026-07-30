@@ -82,22 +82,40 @@ struct ProtocolTests {
             "routine_target_missing", "floor_not_found", "floor_dirty",
             "floor_mechanism_unavailable", "journal_corrupted", "document_corrupted",
             "invalid_params", "confirmation_required", "internal_error",
+            "room_not_found", "room_already_exists",
+            "member_not_found", "member_already_exists", "member_revoked",
+            "invite_invalid", "invite_expired",
+            "agent_session_not_found", "agent_session_archived",
+            "handoff_invalid", "handoff_already_pending", "conductor_required",
+            "grant_not_found", "grant_expired", "grant_revoked",
+            "insufficient_permissions", "idempotency_conflict",
+            "lease_invalid", "lease_expired",
         ]
         #expect(ProtocolErrorName.allCases.map(\.rawValue) == esperados)
     }
 
     @Test func inventarioDeMetodos() {
-        // 35 da §6.4 + portal.open ([v1.5] antecipado, extensão forward-compatible §0)
-        #expect(ColmeiaMethod.allCases.count == 36)
+        // 88 base multiplayer + 20 mission model (mission/workstream/decision/relation)
+        #expect(ColmeiaMethod.allCases.count == 121)
         #expect(ColmeiaMethod(rawValue: "routine.run_now") == .routineRunNow)
         #expect(ColmeiaMethod(rawValue: "doc.apply") == .docApply)
         #expect(ColmeiaMethod(rawValue: "portal.open") == .portalOpen)
+        #expect(ColmeiaMethod(rawValue: "memory.propose") == .memoryPropose)
+        #expect(ColmeiaMethod(rawValue: "delivery.submit") == .deliverySubmit)
+        #expect(ColmeiaMethod(rawValue: "worker.restore") == .workerRestore)
+        #expect(ColmeiaMethod(rawValue: "mission.create") == .missionCreate)
+        #expect(ColmeiaMethod(rawValue: "workstream.briefing") == .workstreamBriefing)
+        #expect(ColmeiaMethod(rawValue: "decision.decide") == .decisionDecide)
+        #expect(ColmeiaMethod(rawValue: "relation.add") == .relationAdd)
     }
 
     @Test func topicos() {
-        #expect(ColmeiaTopic.allCases.count == 10)
+        // 19 base + 13 multiplayer + 2 event ack/reject = 29
+        #expect(ColmeiaTopic.allCases.count == 29)
         #expect(ColmeiaTopic(rawValue: "session.output") == .sessionOutput)
         #expect(ColmeiaTopic(rawValue: "engine.warning") == .engineWarning)
+        #expect(ColmeiaTopic(rawValue: "memory.changed") == .memoryChanged)
+        #expect(ColmeiaTopic(rawValue: "worker.archived") == .workerArchived)
     }
 
     @Test func campoDesconhecidoIgnorado() throws {
@@ -258,5 +276,12 @@ struct PathsTests {
 struct EngineStubTests {
     @Test func versaoCompartilhada() {
         #expect(ColmeiaEngineInfo.version == ColmeiaVersion.string)
+    }
+
+    @Test func comparacaoDeVersaoDistingueAppAntigoDeEngineAntigo() {
+        #expect(ColmeiaVersion.compare("0.2.3", "0.2.4") == .orderedAscending)
+        #expect(ColmeiaVersion.compare("0.2.4", "0.2.4") == .orderedSame)
+        #expect(ColmeiaVersion.compare("1.0.0", "0.9.9") == .orderedDescending)
+        #expect(ColmeiaVersion.compare("0.2.4", "0.2.4-beta") == .orderedSame)
     }
 }

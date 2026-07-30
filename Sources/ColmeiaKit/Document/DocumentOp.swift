@@ -168,12 +168,18 @@ public struct DocOp: Codable, Equatable, Sendable {
     public var payload: OpPayload
     /// §7.3 — o eco da op DEVE incluir os dados para inversão (undo).
     public var anterior: JSONValue?
+    /// §6.3 — relógio lógico para ordem na sala.
+    public var logicalClock: UInt64?
+    /// §6.3 — número de sequência da sala após aceite.
+    public var roomSeq: UInt64?
 
     public var tipo: OpTipo { payload.tipo }
 
     enum CodingKeys: String, CodingKey {
         case seq, author, ts, tipo, payload, anterior
         case opID = "op_id"
+        case logicalClock = "logical_clock"
+        case roomSeq = "room_seq"
     }
 
     public init(
@@ -182,7 +188,9 @@ public struct DocOp: Codable, Equatable, Sendable {
         author: Author,
         ts: Date,
         payload: OpPayload,
-        anterior: JSONValue? = nil
+        anterior: JSONValue? = nil,
+        logicalClock: UInt64? = nil,
+        roomSeq: UInt64? = nil
     ) {
         self.opID = opID
         self.seq = seq
@@ -190,6 +198,8 @@ public struct DocOp: Codable, Equatable, Sendable {
         self.ts = ts
         self.payload = payload
         self.anterior = anterior
+        self.logicalClock = logicalClock
+        self.roomSeq = roomSeq
     }
 
     public init(from decoder: Decoder) throws {
@@ -199,6 +209,8 @@ public struct DocOp: Codable, Equatable, Sendable {
         author = try container.decode(Author.self, forKey: .author)
         ts = try container.decode(Date.self, forKey: .ts)
         anterior = try container.decodeIfPresent(JSONValue.self, forKey: .anterior)
+        logicalClock = try container.decodeIfPresent(UInt64.self, forKey: .logicalClock)
+        roomSeq = try container.decodeIfPresent(UInt64.self, forKey: .roomSeq)
         let tipo = try container.decode(OpTipo.self, forKey: .tipo)
         switch tipo {
         case .nodeAdd:
@@ -234,6 +246,8 @@ public struct DocOp: Codable, Equatable, Sendable {
         try container.encode(ts, forKey: .ts)
         try container.encode(payload.tipo, forKey: .tipo)
         try container.encodeIfPresent(anterior, forKey: .anterior)
+        try container.encodeIfPresent(logicalClock, forKey: .logicalClock)
+        try container.encodeIfPresent(roomSeq, forKey: .roomSeq)
         switch payload {
         case .nodeAdd(let value): try container.encode(value, forKey: .payload)
         case .nodeMove(let value): try container.encode(value, forKey: .payload)
@@ -259,18 +273,38 @@ public struct DocumentSnapshot: Codable, Equatable, Sendable {
     public var nodes: [Node]
     public var connections: [Connection]
     public var criadoEm: Date
+    public var noteContents: [String: String]?
+    public var sessionStates: [[String: String]]?
+    public var sessionOutputs: [String: [[String: String]]]?
+    public var watchdogConfiguration: WorkerWatchdogConfiguration?
+    public var watchdogHistory: [WatchdogHistoryEntry]?
 
     enum CodingKeys: String, CodingKey {
         case seq, nodes, connections
         case workspaceID = "workspace_id"
         case criadoEm = "criado_em"
+        case noteContents = "note_contents"
+        case sessionStates = "session_states"
+        case sessionOutputs = "session_outputs"
+        case watchdogConfiguration = "watchdog_configuration"
+        case watchdogHistory = "watchdog_history"
     }
 
-    public init(workspaceID: ULID, seq: UInt64, nodes: [Node], connections: [Connection], criadoEm: Date) {
+    public init(workspaceID: ULID, seq: UInt64, nodes: [Node], connections: [Connection], criadoEm: Date,
+                noteContents: [String: String]? = nil,
+                sessionStates: [[String: String]]? = nil,
+                sessionOutputs: [String: [[String: String]]]? = nil,
+                watchdogConfiguration: WorkerWatchdogConfiguration? = nil,
+                watchdogHistory: [WatchdogHistoryEntry]? = nil) {
         self.workspaceID = workspaceID
         self.seq = seq
         self.nodes = nodes
         self.connections = connections
         self.criadoEm = criadoEm
+        self.noteContents = noteContents
+        self.sessionStates = sessionStates
+        self.sessionOutputs = sessionOutputs
+        self.watchdogConfiguration = watchdogConfiguration
+        self.watchdogHistory = watchdogHistory
     }
 }

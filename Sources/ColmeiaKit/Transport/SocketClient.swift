@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Dispatch
 
 public enum SocketClientError: Error, CustomStringConvertible {
@@ -58,6 +62,58 @@ public final class SocketClient: @unchecked Sendable {
         defer { stateLock.unlock() }
         guard fd < 0, !closed else { throw SocketClientError.alreadyConnected }
 
+        let cleanPath = socketPath.replacingOccurrences(of: "ws://", with: "").replacingOccurrences(of: "wss://", with: "")
+
+        if cleanPath.contains(":") || (!cleanPath.hasPrefix("/") && cleanPath.contains(".")) {
+            let parts = cleanPath.split(separator: ":")
+            let host = parts.count > 0 ? String(parts[0]) : "127.0.0.1"
+            let port = parts.count > 1 ? (UInt16(parts[1]) ?? 9620) : 9620
+
+            var hints = addrinfo()
+            hints.ai_family = AF_INET
+            #if canImport(Darwin)
+            hints.ai_socktype = SOCK_STREAM
+            #else
+            hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+            #endif
+
+            var res: UnsafeMutablePointer<addrinfo>?
+            let portStr = String(port)
+            let status = host.withCString { h in
+                portStr.withCString { p in
+                    getaddrinfo(h, p, &hints, &res)
+                }
+            }
+            guard status == 0, let info = res else {
+                throw SocketClientError.syscallFailed("getaddrinfo(\(socketPath))", errno: status)
+            }
+            defer { freeaddrinfo(res) }
+
+            let newFD = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
+            guard newFD >= 0 else { throw SocketClientError.syscallFailed("socket", errno: errno) }
+
+            #if canImport(Darwin)
+            var one: Int32 = 1
+            setsockopt(newFD, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+            let connRes = Darwin.connect(newFD, info.pointee.ai_addr, info.pointee.ai_addrlen)
+            #else
+            let connRes = Glibc.connect(newFD, info.pointee.ai_addr, info.pointee.ai_addrlen)
+            #endif
+
+            guard connRes == 0 else {
+                #if canImport(Darwin)
+                _ = Darwin.close(newFD)
+                #else
+                _ = Glibc.close(newFD)
+                #endif
+                throw SocketClientError.syscallFailed("connect(\(socketPath))", errno: errno)
+            }
+
+            self.fd = newFD
+            readQueue.async { [weak self] in self?.readLoop(fd: newFD) }
+            return
+        }
+
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = socketPath.utf8CString
@@ -68,23 +124,41 @@ public final class SocketClient: @unchecked Sendable {
                 destination.baseAddress!.copyMemory(from: source.baseAddress!, byteCount: source.count)
             }
         }
+        #if os(macOS) || os(iOS)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
 
-        let newFD = socket(AF_UNIX, SOCK_STREAM, 0)
+        #if canImport(Darwin)
+        let sockType = SOCK_STREAM
+        #else
+        let sockType = Int32(SOCK_STREAM.rawValue)
+        #endif
+
+        let newFD = socket(AF_UNIX, sockType, 0)
         guard newFD >= 0 else { throw SocketClientError.syscallFailed("socket", errno: errno) }
 
         // Sem SIGPIPE ao escrever num engine que caiu — o erro volta como EPIPE.
+        #if canImport(Darwin)
         var one: Int32 = 1
         _ = setsockopt(newFD, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        #endif
 
         let rc = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                Darwin.connect(newFD, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+                #if canImport(Darwin)
+                return Darwin.connect(newFD, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+                #elseif canImport(Glibc)
+                return Glibc.connect(newFD, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+                #endif
             }
         }
         guard rc == 0 else {
             let code = errno
+            #if canImport(Darwin)
             _ = Darwin.close(newFD)
+            #elseif canImport(Glibc)
+            _ = Glibc.close(newFD)
+            #endif
             throw SocketClientError.syscallFailed("connect", errno: code)
         }
 
@@ -107,7 +181,7 @@ public final class SocketClient: @unchecked Sendable {
         closed = true
         stateLock.unlock()
         if currentFD >= 0 {
-            _ = shutdown(currentFD, SHUT_RDWR)
+            _ = shutdown(currentFD, Int32(SHUT_RDWR))
         }
     }
 
@@ -118,11 +192,12 @@ public final class SocketClient: @unchecked Sendable {
     public func hello(
         client: String,
         author: Author = .humanoLocal,
-        protocolVersion: Int = ColmeiaVersion.protocolVersion
+        protocolVersion: Int = ColmeiaVersion.protocolVersion,
+        token: String? = nil
     ) async throws -> HelloResult {
         try await call(
             .hello,
-            params: HelloParams(protocolVersion: protocolVersion, client: client, author: author),
+            params: HelloParams(protocolVersion: protocolVersion, client: client, author: author, token: token),
             expecting: HelloResult.self
         )
     }
@@ -243,7 +318,11 @@ public final class SocketClient: @unchecked Sendable {
         closed = true
         stateLock.unlock()
 
+        #if canImport(Darwin)
         _ = Darwin.close(disconnectedFD)
+        #elseif canImport(Glibc)
+        _ = Glibc.close(disconnectedFD)
+        #endif
         for (_, continuation) in orphans {
             continuation.resume(throwing: SocketClientError.connectionClosed)
         }

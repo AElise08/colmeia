@@ -21,7 +21,7 @@ struct FloorBar: View {
                         Task { await store.switchFloor(floor) }
                     } label: {
                         if floor.estado == .orfao {
-                            Label("\(floor.nome) (órfão)", systemImage: "exclamationmark.triangle")
+                            Label("Readotar \(floor.nome)…", systemImage: "exclamationmark.triangle")
                         } else {
                             Text(floor.nome)
                         }
@@ -33,7 +33,6 @@ struct FloorBar: View {
                     branchNova = ""
                     criando = true
                 }
-                .disabled(store.workspace?.caminhoRaiz == nil)
             } label: {
                 Label(store.activeFloor?.nome ?? "térreo", systemImage: "square.3.layers.3d")
                     .font(.caption)
@@ -58,12 +57,17 @@ struct FloorBar: View {
                 }
                 .controlSize(.small)
             } else {
+                Text("térreo")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(store.activeFloor == nil ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(Color.purple.opacity(0.25)))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(store.activeFloor.map { "Andar ativo \($0.nome)" } ?? "Andar térreo")
         .sheet(isPresented: $criando) { formNovoAndar }
         .confirmationDialog(
             "Descartar o andar \(confirmandoDescarte?.nome ?? "")?",

@@ -58,6 +58,11 @@ struct NotaNodeView<Drag: Gesture>: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .environment(\.colorScheme, .light)
         .tint(tinta)
+        .contextMenu {
+            Button("Apagar nota", role: .destructive) {
+                Task { await store.deleteNode(node.id) }
+            }
+        }
     }
 
     private var header: some View {
@@ -78,6 +83,16 @@ struct NotaNodeView<Drag: Gesture>: View {
                         )))
                     }
             }
+            Button(role: .destructive) {
+                Task { await store.deleteNode(node.id) }
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.black.opacity(0.48))
+            }
+            .buttonStyle(.plain)
+            .help("Apagar nota")
+            .accessibilityLabel("Apagar nota")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -103,14 +118,16 @@ struct NotaNodeView<Drag: Gesture>: View {
             }
         } else {
             ScrollView {
-                NotaMarkdownView(texto: controller.texto, tinta: tinta) { linha in
-                    if controller.toggleTarefa(linha: linha) {
-                        store.perform(.nodeUpdate(NodeUpdateOpPayload(
-                            id: node.id,
-                            campos: .object(["ultima_fonte": .string(Author.humanoLocal.rawValue)])
-                        )))
+                NotaMarkdownView(
+                    texto: textoParaExibir,
+                    tinta: tinta,
+                    onToggleTarefa: { linha in
+                        if controller.toggleTarefa(linha: linha) { registrarEdicaoHumana() }
+                    },
+                    onRemoveTarefa: { linha in
+                        if controller.removerTarefa(linha: linha) { registrarEdicaoHumana() }
                     }
-                }
+                )
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(8)
             }
@@ -136,6 +153,18 @@ struct NotaNodeView<Drag: Gesture>: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.black.opacity(0.6))
             } else {
+                Button {
+                    controller.adicionarTarefa()
+                    registrarEdicaoHumana()
+                    controller.editando = true
+                    editorFocado = true
+                } label: {
+                    Label("Tarefa", systemImage: "checklist")
+                        .font(.system(size: 9))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.black.opacity(0.65))
+                .help("Adicionar item ao checklist")
                 Text("2× clique para editar")
                     .font(.system(size: 8))
                     .foregroundStyle(.black.opacity(0.3))
@@ -148,15 +177,50 @@ struct NotaNodeView<Drag: Gesture>: View {
     private func nomeFonte(_ author: Author) -> String {
         switch author {
         case .humano(let id): return id == "local" ? "você" : id
-        case .agente(let nodeID): return ULID(nodeID).map { store.nodeName($0) } ?? nodeID
+        case .agente(let nodeID):
+            guard let id = ULID(nodeID) else { return "agente" }
+            let nome = store.nodeName(id)
+            return nome == nodeID ? "agente" : nome
         case .sistema: return "sistema"
         }
+    }
+
+    /// Notas antigas podem conter o cabeçalho técnico usado antes da apresentação
+    /// amigável. Mantemos o arquivo/auditoria intactos, mas nunca exibimos ao usuário
+    /// `_agente:<ULID> — ..._`.
+    private var textoParaExibir: String {
+        controller.texto
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                let raw = String(line)
+                guard raw.hasPrefix("_agente:"), raw.hasSuffix("_"),
+                      let separator = raw.range(of: " — ")
+                else { return raw }
+                let rawAuthor = String(raw.dropFirst().prefix(upTo: separator.lowerBound))
+                guard case .agente(let nodeID) = Author(rawValue: rawAuthor) else { return raw }
+                let friendly: String
+                if let id = ULID(nodeID) {
+                    let nome = store.nodeName(id)
+                    friendly = nome == nodeID ? "agente" : nome
+                } else {
+                    friendly = "agente"
+                }
+                return "_\(friendly)\(raw[separator.lowerBound...])"
+            }
+            .joined(separator: "\n")
     }
 
     private func terminarEdicao() {
         guard controller.editando else { return }
         controller.editando = false
         controller.persist()
+        registrarEdicaoHumana()
+    }
+
+    /// A view pode receber um clique já enfileirado depois de `node.delete`.
+    /// O AppStore descarta apenas esse update local inequivocamente obsoleto;
+    /// rejeições do engine para nós ainda presentes continuam aparecendo.
+    private func registrarEdicaoHumana() {
         store.perform(.nodeUpdate(NodeUpdateOpPayload(
             id: node.id,
             campos: .object(["ultima_fonte": .string(Author.humanoLocal.rawValue)])
@@ -170,6 +234,7 @@ struct NotaMarkdownView: View {
     let texto: String
     let tinta: Color
     let onToggleTarefa: (Int) -> Void
+    let onRemoveTarefa: (Int) -> Void
 
     private enum Bloco: Identifiable {
         case titulo(linha: Int, nivel: Int, texto: String)
@@ -218,7 +283,9 @@ struct NotaMarkdownView: View {
                     return .tarefa(
                         linha: linha,
                         feita: feita,
-                        texto: resto.dropFirst(caixa.count).trimmingCharacters(in: .whitespaces)
+                        texto: textoVisivelDaTarefa(
+                            resto.dropFirst(caixa.count).trimmingCharacters(in: .whitespaces)
+                        )
                     )
                 }
                 if !resto.isEmpty {
@@ -238,6 +305,18 @@ struct NotaMarkdownView: View {
             }
             return .paragrafo(linha: linha, texto: conteudo)
         }
+    }
+
+    /// IDs estáveis usados pela API de agentes vivem em comentário HTML no
+    /// Markdown. O arquivo continua interoperável, mas esse metadado não deve
+    /// aparecer como parte do texto da tarefa no canvas.
+    private func textoVisivelDaTarefa(_ texto: String) -> String {
+        guard let inicio = texto.range(of: "<!-- colmeia:item:"),
+              let fim = texto.range(of: "-->", range: inicio.upperBound..<texto.endIndex)
+        else { return texto }
+        var visivel = texto
+        visivel.removeSubrange(inicio.lowerBound..<fim.upperBound)
+        return visivel.trimmingCharacters(in: .whitespaces)
     }
 
     @ViewBuilder
@@ -262,6 +341,16 @@ struct NotaMarkdownView: View {
                     .font(.system(size: 12))
                     .strikethrough(feita, color: tinta.opacity(0.5))
                     .foregroundStyle(tinta.opacity(feita ? 0.5 : 0.9))
+                Button {
+                    onRemoveTarefa(linha)
+                } label: {
+                    Image(systemName: "minus.circle")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(tinta.opacity(0.55))
+                .help("Remover tarefa")
+                .accessibilityLabel("Remover tarefa \(texto)")
             }
         case .item(_, let marcador, let texto):
             HStack(alignment: .firstTextBaseline, spacing: 5) {
@@ -311,8 +400,74 @@ struct DesenhoNodeView<Drag: Gesture>: View {
     let dragGesture: Drag
 
     @EnvironmentObject private var store: AppStore
+    @State private var editandoTexto = false
+    @State private var textoEditado = ""
+    @FocusState private var focoNoTexto: Bool
+
+    private var textoSolto: Bool {
+        node.texto != nil && !node.tracos.isEmpty && node.tracos.allSatisfy { $0.tipo == .texto }
+    }
 
     var body: some View {
+        Group {
+            if textoSolto {
+                corpoTextoSolto
+            } else {
+                corpoDesenho
+            }
+        }
+        .contextMenu {
+            if textoSolto {
+                Button("Editar texto") { iniciarEdicaoTexto() }
+            } else {
+                Button("Apagar último traço") { store.deleteUltimoTraco(nodeID: node.id) }
+                    .disabled(node.tracos.isEmpty)
+            }
+            Button(textoSolto ? "Apagar texto" : "Apagar desenho", role: .destructive) {
+                Task { await store.deleteNode(node.id) }
+            }
+        }
+    }
+
+    /// Texto solto não recebe cartão, fundo ou borda: fora do contorno temporário
+    /// de seleção em NodeContainer, é só tinta sobre o canvas. Continua um nó
+    /// para preservar acessibilidade, drag e resize.
+    private var corpoTextoSolto: some View {
+        Group {
+            if editandoTexto {
+                TextField("Texto", text: $textoEditado, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1...12)
+                    .focused($focoNoTexto)
+                    .onSubmit(confirmarEdicaoTexto)
+                    .onChange(of: focoNoTexto) { _, focado in
+                        if !focado { confirmarEdicaoTexto() }
+                    }
+                    .accessibilityLabel("Editar texto solto")
+            } else {
+                Text(node.texto ?? "")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2, perform: iniciarEdicaoTexto)
+                    .accessibilityLabel("Texto solto: \(node.texto ?? "")")
+                    .accessibilityHint("Clique duas vezes para editar; arraste para mover")
+            }
+        }
+        .gesture(editandoTexto ? nil : dragGesture)
+        .onAppear {
+            if textoEditado.isEmpty { textoEditado = node.texto ?? "" }
+        }
+        .onChange(of: node.texto) { _, novo in
+            if !editandoTexto { textoEditado = novo ?? "" }
+        }
+    }
+
+    private var corpoDesenho: some View {
         Canvas { context, _ in
             for traco in node.tracos {
                 desenhar(traco, in: &context)
@@ -322,12 +477,22 @@ struct DesenhoNodeView<Drag: Gesture>: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.1), lineWidth: 1))
         .contentShape(Rectangle())
         .gesture(dragGesture)
-        .contextMenu {
-            Button("Apagar último traço") { store.deleteUltimoTraco(nodeID: node.id) }
-                .disabled(node.tracos.isEmpty)
-            Button("Apagar desenho", role: .destructive) {
-                Task { await store.deleteNode(node.id) }
-            }
+    }
+
+    private func iniciarEdicaoTexto() {
+        textoEditado = node.texto ?? ""
+        editandoTexto = true
+        focoNoTexto = true
+    }
+
+    private func confirmarEdicaoTexto() {
+        guard editandoTexto else { return }
+        editandoTexto = false
+        let novo = textoEditado.trimmingCharacters(in: .whitespacesAndNewlines)
+        if novo.isEmpty {
+            Task { await store.deleteNode(node.id) }
+        } else if novo != node.texto {
+            store.updateTextoSolto(node.id, texto: novo)
         }
     }
 

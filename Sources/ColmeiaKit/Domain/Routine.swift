@@ -74,6 +74,15 @@ public enum RoutineResultado: String, Codable, CaseIterable, Sendable {
     case puladaAlvoAusente = "pulada_alvo_ausente"
 }
 
+/// Estado derivado da agenda, persistido para que um `once` vencido não seja
+/// indistinguível de uma rotina sem próxima execução por outro motivo (§17.4).
+/// Clientes anteriores ignoram o campo `estado_agenda` conforme §0.
+public enum RoutineEstadoAgenda: String, Codable, CaseIterable, Sendable {
+    case agendada
+    case pendenteAtrasada = "pendente_atrasada"
+    case concluida
+}
+
 public struct UltimaExecucao: Codable, Equatable, Sendable {
     public var ts: Date
     public var resultado: RoutineResultado
@@ -99,12 +108,16 @@ public struct Routine: Codable, Equatable, Sendable {
     /// Derivada; recalculada pelo engine.
     public var proximaExecucao: Date?
     public var ultimaExecucao: UltimaExecucao?
+    /// `once` passado e ainda não executado fica pendente para decisão explícita
+    /// da usuária; o scheduler nunca o dispara sozinho (§17.4).
+    public var estadoAgenda: RoutineEstadoAgenda
 
     enum CodingKeys: String, CodingKey {
         case id, nome, alvo, comando, agenda, notificar, habilitada
         case workspaceID = "workspace_id"
         case proximaExecucao = "proxima_execucao"
         case ultimaExecucao = "ultima_execucao"
+        case estadoAgenda = "estado_agenda"
     }
 
     public init(
@@ -117,7 +130,8 @@ public struct Routine: Codable, Equatable, Sendable {
         notificar: Bool = false,
         habilitada: Bool = true,
         proximaExecucao: Date? = nil,
-        ultimaExecucao: UltimaExecucao? = nil
+        ultimaExecucao: UltimaExecucao? = nil,
+        estadoAgenda: RoutineEstadoAgenda = .agendada
     ) {
         self.id = id
         self.nome = nome
@@ -129,5 +143,26 @@ public struct Routine: Codable, Equatable, Sendable {
         self.habilitada = habilitada
         self.proximaExecucao = proximaExecucao
         self.ultimaExecucao = ultimaExecucao
+        self.estadoAgenda = estadoAgenda
+    }
+
+    /// Conveniência para a UI e para migração de `routines.json` antigos.
+    public var pendenteAtrasada: Bool { estadoAgenda == .pendenteAtrasada }
+
+    /// `estado_agenda` foi adicionado depois dos primeiros arquivos persistidos;
+    /// ausente significa que o engine deve recalcular durante o boot.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ULID.self, forKey: .id)
+        nome = try container.decode(String.self, forKey: .nome)
+        workspaceID = try container.decode(ULID.self, forKey: .workspaceID)
+        alvo = try container.decode(ULID.self, forKey: .alvo)
+        comando = try container.decode(String.self, forKey: .comando)
+        agenda = try container.decode(Agenda.self, forKey: .agenda)
+        notificar = try container.decode(Bool.self, forKey: .notificar)
+        habilitada = try container.decode(Bool.self, forKey: .habilitada)
+        proximaExecucao = try container.decodeIfPresent(Date.self, forKey: .proximaExecucao)
+        ultimaExecucao = try container.decodeIfPresent(UltimaExecucao.self, forKey: .ultimaExecucao)
+        estadoAgenda = try container.decodeIfPresent(RoutineEstadoAgenda.self, forKey: .estadoAgenda) ?? .agendada
     }
 }

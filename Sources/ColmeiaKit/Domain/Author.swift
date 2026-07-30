@@ -1,12 +1,15 @@
 import Foundation
 
 /// Identidade presente em todo evento (§4.3): `humano:<id>` | `agente:<node-id>` | `sistema`.
-/// Na v1 o único humano é `humano:local`.
+/// Na v1, `humanoLocal` mantém `humano:local` para compatibilidade; para a identidade
+/// estável de instalação (Fase 0), use `InstallationIdentity.currentAuthor()`.
 public enum Author: Hashable, Sendable, RawRepresentable, Codable, CustomStringConvertible {
     case humano(String)
     case agente(String)
     case sistema
 
+    /// Identidade local singleton — `humano:local`. Mantido para compatibilidade com a v1.
+    /// Para identidade estável de instalação, veja `InstallationIdentity.currentAuthor()`.
     public static let humanoLocal = Author.humano("local")
 
     public var rawValue: String {

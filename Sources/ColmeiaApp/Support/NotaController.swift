@@ -64,6 +64,32 @@ final class NotaController: ObservableObject {
         return true
     }
 
+    /// Insere uma tarefa Markdown editável. A nota entra em edição na view para
+    /// que "Nova tarefa" seja substituída imediatamente, mas o conteúdo já fica
+    /// persistido se ela perder foco antes de digitar (§15.1).
+    func adicionarTarefa() {
+        texto = Self.textoComTarefaAdicionada(texto)
+        persist()
+    }
+
+    /// Remove a linha de checklist inteira. Só aceita linhas que a mesma
+    /// heurística de toggle reconhece, evitando apagar parágrafos por um clique
+    /// atrasado em uma nota que mudou externamente.
+    @discardableResult
+    func removerTarefa(linha: Int) -> Bool {
+        var linhas = texto.components(separatedBy: "\n")
+        guard linhas.indices.contains(linha), Self.alternarCheckbox(linhas[linha]) != nil else { return false }
+        linhas.remove(at: linha)
+        texto = linhas.joined(separator: "\n")
+        persist()
+        return true
+    }
+
+    static func textoComTarefaAdicionada(_ texto: String) -> String {
+        guard !texto.isEmpty else { return "- [ ] Nova tarefa" }
+        return texto.hasSuffix("\n") ? texto + "- [ ] Nova tarefa" : texto + "\n- [ ] Nova tarefa"
+    }
+
     static func alternarCheckbox(_ linha: String) -> String? {
         guard let abre = linha.range(of: #"^\s*[-*]\s+\["#, options: .regularExpression) else { return nil }
         let resto = linha[abre.upperBound...]

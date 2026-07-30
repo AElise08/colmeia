@@ -20,10 +20,14 @@ struct TerminalNodeView<Drag: Gesture>: View {
     let dragGesture: Drag
 
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var presenceStore: CollaborationPresenceStore
     @State private var pulsando = false
     @State private var confirmandoDelete = false
 
     private var estado: SessionEstado? { controller.estado }
+    private var remoteViewers: [(memberID: String, name: String)] {
+        presenceStore.viewers(for: node.id)
+    }
     private var morto: Bool {
         if let estado { return !estado.isViva }
         return true
@@ -45,6 +49,14 @@ struct TerminalNodeView<Drag: Gesture>: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(bordaCor, lineWidth: 1))
         .opacity(morto && estado != nil ? 0.75 : 1)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .onAppear { controller.applyFontSize(node.aparencia?.tamanhoFonte) }
+        .onChange(of: node.aparencia?.tamanhoFonte) { _, novo in
+            controller.applyFontSize(novo)
+        }
+    }
+
+    private var tamanhoFonteAtual: Double {
+        Double(TerminalAppearance.tamanhoNormalizado(node.aparencia?.tamanhoFonte))
     }
 
     // MARK: - Cabeçalho (§18.3)
@@ -63,10 +75,23 @@ struct TerminalNodeView<Drag: Gesture>: View {
                     .background(papelCor(papel).opacity(0.25), in: Capsule())
             }
             badgeAprovacoes
+            if !remoteViewers.isEmpty {
+                HStack(spacing: -4) {
+                    ForEach(remoteViewers.prefix(3), id: \.memberID) { viewer in
+                        Text(String(viewer.name.prefix(1)).uppercased())
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 16, height: 16)
+                            .background(viewerColor(viewer.memberID), in: Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 0.8))
+                            .help("\(viewer.name) está neste terminal")
+                    }
+                }
+            }
             Spacer(minLength: 4)
             Text(EstadoStyle.rotulo(estado))
                 .font(.system(size: 9))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(EstadoStyle.cor(estado))
             Menu {
                 if controller.viva {
                     Button("Matar sessão") {
@@ -79,6 +104,16 @@ struct TerminalNodeView<Drag: Gesture>: View {
                 }
                 if let session = controller.session {
                     Button("Replay") { store.replaySession = session }
+                }
+                Divider()
+                Button("Aumentar texto") {
+                    store.setTerminalFontSize(nodeID: node.id, size: tamanhoFonteAtual + 1)
+                }
+                Button("Diminuir texto") {
+                    store.setTerminalFontSize(nodeID: node.id, size: tamanhoFonteAtual - 1)
+                }
+                Button("Texto padrão") {
+                    store.setTerminalFontSize(nodeID: node.id, size: Double(TerminalAppearance.tamanhoFonte))
                 }
                 Button("Abrir no editor") { EditorOpener.abrir(caminho: node.cwd) }
                 Divider()
@@ -163,47 +198,57 @@ struct TerminalNodeView<Drag: Gesture>: View {
 
     // MARK: - Corpo
 
-    @ViewBuilder
+    /// O host do emulador fica SEMPRE montado (mesmo sem sessão): o SwiftTerm
+    /// precisa do layout real ANTES do session.start para o PTY nascer com as
+    /// cols/rows que a tela de fato desenha — geometria nunca sai de placeholder.
     private var corpo: some View {
-        if controller.session == nil && estado == nil {
-            VStack(spacing: 8) {
-                Text("sem sessão")
-                    .foregroundStyle(.secondary)
-                Button("Lançar") {
-                    Task { await store.relaunch(nodeID: node.id) }
+        TerminalHostView(controller: controller)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(Color(nsColor: TerminalAppearance.fundo))
+            .overlay {
+                if controller.session == nil && estado == nil {
+                    VStack(spacing: 8) {
+                        Text("sem sessão")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(nsColor: TerminalAppearance.texto).opacity(0.6))
+                        Button("Lançar") {
+                            Task { await store.relaunch(nodeID: node.id) }
+                        }
+                        .controlSize(.small)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(nsColor: TerminalAppearance.fundo).opacity(0.85))
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
             // Nó morto mantém o último frame do emulador (§18.3); o overlay oferece relançar.
-            TerminalHostView(controller: controller)
-                .overlay(alignment: .bottom) {
-                    if morto && estado != nil {
-                        HStack(spacing: 10) {
-                            Text(estado == .encerrada ? "sessão encerrada" : "sessão morta")
-                                .font(.caption)
-                            if let motivo = controller.motivoEstado {
-                                Text(motivo)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Button("Relançar") {
-                                Task { await store.relaunch(nodeID: node.id) }
-                            }
-                            .controlSize(.small)
+            .overlay(alignment: .bottom) {
+                if morto && estado != nil {
+                    HStack(spacing: 10) {
+                        Text(estado == .encerrada ? "sessão encerrada" : "sessão morta")
+                            .font(.caption)
+                        if let motivo = controller.motivoEstado {
+                            Text(motivo)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
-                        .padding(8)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(.bottom, 10)
+                        Button("Relançar") {
+                            Task { await store.relaunch(nodeID: node.id) }
+                        }
+                        .controlSize(.small)
                     }
+                    .padding(8)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, 10)
                 }
-        }
+            }
     }
 
-    /// Fora do viewport: só moldura, sem renderizar conteúdo (§18.2).
+    /// Fora do viewport: só moldura, sem renderizar conteúdo (§18.2). Cor do
+    /// fundo do terminal para não "piscar" claro ao entrar/sair do viewport.
     private var moldura: some View {
         Rectangle()
-            .fill(Color.black.opacity(0.15))
+            .fill(Color(nsColor: TerminalAppearance.fundo))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -275,5 +320,10 @@ struct TerminalNodeView<Drag: Gesture>: View {
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m" }
         return "\(s / 3600)h"
+    }
+
+    private func viewerColor(_ memberID: String) -> SwiftUI.Color {
+        let scalar = memberID.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 360 }
+        return SwiftUI.Color(hue: Double(scalar) / 360, saturation: 0.72, brightness: 0.9)
     }
 }

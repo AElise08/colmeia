@@ -48,6 +48,7 @@ struct ConnectionLineView: View {
     let connection: Connection
 
     @EnvironmentObject private var store: AppStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func tela(_ p: CGPoint) -> CGPoint {
         let convertido = CanvasMath.mundoParaTela(Ponto(x: p.x, y: p.y), viewport: store.viewport)
@@ -55,39 +56,74 @@ struct ConnectionLineView: View {
     }
 
     var body: some View {
-        if let de = store.nodes[connection.de], let para = store.nodes[connection.para] {
-            let (a, b) = CanvasMath.ancorasDeConexao(de: worldRect(de), para: worldRect(para))
-            let inicio = tela(a)
-            let fim = tela(b)
-            let selecionada = store.connectionSelection == connection.id
-            let caminho = linha(inicio, fim)
+        if store.nodeIsVisibleOnActiveFloor(connection.de),
+           store.nodeIsVisibleOnActiveFloor(connection.para),
+           let de = store.nodes[connection.de],
+           let para = store.nodes[connection.para] {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
+                rope(de: de, para: para, time: timeline.date.timeIntervalSinceReferenceDate)
+            }
+        }
+    }
 
-            caminho
-                .stroke(cor.opacity(selecionada ? 1 : 0.65), style: StrokeStyle(
+    @ViewBuilder
+    private func rope(de: Node, para: Node, time: TimeInterval) -> some View {
+        let (a, b) = CanvasMath.ancorasDeConexao(de: worldRect(de), para: worldRect(para))
+        let inicio = tela(a)
+        let fim = tela(b)
+        let selecionada = store.connectionSelection == connection.id
+        let geometria = linha(inicio, fim, time: time)
+        let opacidade = min(store.floorOpacity(for: connection.de), store.floorOpacity(for: connection.para))
+
+        geometria.path
+            // Halo translúcido: dá a sensação de corda sobre o vidro sem tornar
+            // as conexões pesadas no canvas com muitos nós.
+            .stroke(cor.opacity(selecionada ? 0.26 : 0.14), style: StrokeStyle(lineWidth: selecionada ? 8 : 6, lineCap: .round))
+            .overlay {
+                geometria.path.stroke(cor.opacity(selecionada ? 1 : 0.72), style: StrokeStyle(
                     lineWidth: selecionada ? 3 : 2,
                     lineCap: .round,
                     dash: connection.estilo == .tracejada ? [6, 5] : []
                 ))
-                .overlay(seta(em: fim, vindoDe: inicio))
-                .contentShape(caminho.strokedPath(StrokeStyle(lineWidth: 14, lineCap: .round)))
-                .onTapGesture {
-                    store.connectionSelection = connection.id
-                    store.selection = nil
+            }
+            .overlay(seta(em: fim, vindoDe: geometria.controleFinal))
+            .contentShape(geometria.path.strokedPath(StrokeStyle(lineWidth: 16, lineCap: .round)))
+            .onTapGesture {
+                store.connectionSelection = connection.id
+                store.selection = nil
+            }
+            .contextMenu {
+                Text(rotulo)
+                Button("Apagar conexão", role: .destructive) {
+                    store.deleteConnection(connection.id)
                 }
-                .contextMenu {
-                    Text(rotulo)
-                    Button("Apagar conexão", role: .destructive) {
-                        store.deleteConnection(connection.id)
-                    }
-                }
-        }
+            }
+            .opacity(opacidade)
+            .allowsHitTesting(opacidade >= 0.99)
     }
 
-    private func linha(_ inicio: CGPoint, _ fim: CGPoint) -> Path {
-        Path { path in
+    /// Curva cúbica com uma oscilação pequena no eixo perpendicular. Nos nós
+    /// próximos ela se aproxima de uma reta; nos distantes, ganha a folga de uma
+    /// corda. O phase é estável por conexão, então as linhas não pulam ao render.
+    private func linha(_ inicio: CGPoint, _ fim: CGPoint, time: TimeInterval) -> (path: Path, controleFinal: CGPoint) {
+        let dx = fim.x - inicio.x
+        let dy = fim.y - inicio.y
+        let distance = max(1, hypot(dx, dy))
+        let perpendicular = CGPoint(x: -dy / distance, y: dx / distance)
+        let phase = Double(connection.id.string.unicodeScalars.reduce(0) { ($0 &* 33) &+ Int($1.value) } % 628) / 100
+        let amplitude = reduceMotion ? 0 : min(11, max(2, distance * 0.025)) * sin(time * 1.35 + phase)
+        let sag = min(22, distance * 0.07)
+        let middle = CGPoint(x: (inicio.x + fim.x) / 2, y: (inicio.y + fim.y) / 2 + sag)
+        let control1 = CGPoint(x: inicio.x + dx * 0.30 + perpendicular.x * amplitude, y: inicio.y + dy * 0.30 + perpendicular.y * amplitude + sag * 0.55)
+        let control2 = CGPoint(x: fim.x - dx * 0.30 - perpendicular.x * amplitude, y: fim.y - dy * 0.30 - perpendicular.y * amplitude + sag * 0.55)
+        // Recentrar ligeiramente os controles impede que uma corda quase vertical
+        // pareça uma parábola muito pesada.
+        let finalControl = CGPoint(x: (control2.x + middle.x) / 2, y: (control2.y + middle.y) / 2)
+        let path = Path { path in
             path.move(to: inicio)
-            path.addLine(to: fim)
+            path.addCurve(to: fim, control1: control1, control2: finalControl)
         }
+        return (path, finalControl)
     }
 
     private func seta(em ponta: CGPoint, vindoDe origem: CGPoint) -> some View {

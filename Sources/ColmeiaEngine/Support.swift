@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import ColmeiaKit
 
 // MARK: - Log estruturado (§22.6)
@@ -66,29 +70,16 @@ public final class EngineLog: @unchecked Sendable {
     }
 }
 
-// MARK: - Escrita atômica (§20.2)
 
-enum AtomicJSON {
-    /// temp + rename no mesmo diretório.
-    static func write(_ value: some Encodable, to url: URL) throws {
-        let data = try ColmeiaJSON.encoder().encode(value)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let temp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(getpid())")
-        try data.write(to: temp, options: [])
-        if rename(temp.path, url.path) != 0 {
-            let code = errno
-            try? FileManager.default.removeItem(at: temp)
-            throw EngineFailure.io("rename \(url.lastPathComponent)", code)
-        }
-    }
 
-    static func read<T: Decodable>(_ type: T.Type, from url: URL) throws -> T {
-        let data = try Data(contentsOf: url)
-        return try ColmeiaJSON.decoder().decode(type, from: data)
-    }
-}
+// MARK: - Escrita durável e saúde do armazenamento (§20.2, §22.3)
+
+/// Estado global, consultável pelo engine antes de criar uma sessão. A escrita que
+/// falhou não é repetida cegamente: em ENOSPC/EDQUOT o engine passa a recusar novas
+/// sessões, enquanto as já vivas continuam no melhor esforço exigido pela RFC.
+
+
+
 
 // MARK: - Lock de instância única (§20.5)
 
@@ -186,13 +177,49 @@ func caminhoContido(_ caminho: String, em base: String) -> Bool {
     return child == parent || child.hasPrefix(parent + "/")
 }
 
-func which(_ binario: String) -> Bool {
+func executableSearchPath(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+) -> [String] {
+    let inherited = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
+    var conventional = [
+        homeDirectory.appendingPathComponent(".local/bin").path,
+        homeDirectory.appendingPathComponent(".gemini/bin").path,
+        homeDirectory.appendingPathComponent(".npm-global/bin").path,
+        homeDirectory.appendingPathComponent(".opencode/bin").path,
+        homeDirectory.appendingPathComponent(".cargo/bin").path,
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/local/share/npm/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+    if let nvmDir = environment["NVM_DIR"] ?? Optional(homeDirectory.appendingPathComponent(".nvm").path) {
+        let nodeVersionsDir = URL(fileURLWithPath: nvmDir).appendingPathComponent("versions/node")
+        if let subdirs = try? FileManager.default.contentsOfDirectory(at: nodeVersionsDir, includingPropertiesForKeys: nil) {
+            for sub in subdirs {
+                conventional.append(sub.appendingPathComponent("bin").path)
+            }
+        }
+    }
+    var seen = Set<String>()
+    return (inherited + conventional).filter { !$0.isEmpty && seen.insert($0).inserted }
+}
+
+func executablePath(
+    _ binario: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> String? {
     if binario.contains("/") {
-        return FileManager.default.isExecutableFile(atPath: binario)
+        return FileManager.default.isExecutableFile(atPath: binario) ? binario : nil
     }
-    let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/local/bin"
-    for dir in path.split(separator: ":") {
-        if FileManager.default.isExecutableFile(atPath: "\(dir)/\(binario)") { return true }
+    for directory in executableSearchPath(environment: environment) {
+        let candidate = URL(fileURLWithPath: directory).appendingPathComponent(binario).path
+        if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
     }
-    return false
+    return nil
+}
+
+func which(_ binario: String) -> Bool {
+    executablePath(binario) != nil
 }

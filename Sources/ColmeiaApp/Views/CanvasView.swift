@@ -10,17 +10,61 @@ enum CanvasSpace {
     static let nome = "colmeia-canvas"
 }
 
+private struct RemotePresenceLayer: View {
+    @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var presenceStore: CollaborationPresenceStore
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(presenceStore.remotePresences.values), id: \.memberID) { presence in
+                if let cursor = presence.cursor {
+                    let point = CanvasMath.mundoParaTela(cursor, viewport: store.viewport)
+                    let color = color(for: presence.memberID)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Image(systemName: "cursorarrow")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(color)
+                        Text(presence.displayName
+                             ?? presenceStore.members[presence.memberID]?.displayName
+                             ?? presence.memberID)
+                            .font(.caption2.bold())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(color, in: Capsule())
+                            .offset(x: 12, y: -2)
+                    }
+                    .position(x: point.x, y: point.y)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func color(for memberID: String) -> SwiftUI.Color {
+        let scalar = memberID.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 360 }
+        return SwiftUI.Color(hue: Double(scalar) / 360, saturation: 0.72, brightness: 0.95)
+    }
+}
+
 struct CanvasView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var presenceStore: CollaborationPresenceStore
 
     @State private var panStart: Viewport?
-    @State private var magStartZoom: Double?
-    @State private var scrollMonitor: Any?
     @State private var keyMonitor: Any?
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
+        VStack(spacing: 0) {
+            canvasModeBar
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                // Metal fica estritamente atrás da interação SwiftUI. A grade por
+                // cima conserva a orientação espacial mesmo quando o efeito de
+                // vidro está animado.
+                CanvasMetalBackdrop(viewport: store.viewport)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
                 GridBackground(viewport: store.viewport)
                     .contentShape(Rectangle())
                     .gesture(panGesture)
@@ -31,6 +75,7 @@ struct CanvasView: View {
                     }
                 ConnectionsLayer()
                 nodeLayer
+                RemotePresenceLayer()
                 if store.ferramentaDesenho != nil {
                     DrawingLayer()
                 }
@@ -41,17 +86,59 @@ struct CanvasView: View {
             }
             .clipped()
             .coordinateSpace(name: CanvasSpace.nome)
-            .simultaneousGesture(magnificationGesture)
+            // Navegação universal (§18.2): pinch/⌥-scroll/⌘-scroll/Espaço+drag
+            // funcionam SOBRE webview e terminal — NSEvent monitors por janela
+            // (CanvasNavigation.swift). O pinch SwiftUI foi substituído por lá
+            // (ancorado no cursor; o gesto antigo nem dispararia, consumido).
+            .background(CanvasEventBridge(store: store) { screenPoint in
+                let world = CanvasMath.telaParaMundo(screenPoint, viewport: store.viewport)
+                presenceStore.updateLocal(
+                    cursor: world, viewport: store.viewport,
+                    selectedNodeID: store.selection
+                )
+            })
             .onAppear {
                 store.canvasSize = geo.size
-                installScrollMonitor()
                 installKeyMonitor()
             }
             .onDisappear(perform: removeMonitors)
             .onChange(of: geo.size) { _, novo in
                 store.canvasSize = novo
             }
+            .onChange(of: store.selection) { _, selection in
+                presenceStore.updateContext(viewport: store.viewport, selectedNodeID: selection)
+            }
+            .onChange(of: store.viewport) { _, viewport in
+                presenceStore.updateContext(viewport: viewport, selectedNodeID: store.selection, immediate: false)
+            }
+            }
         }
+    }
+
+    private var canvasModeBar: some View {
+        HStack(spacing: 6) {
+            ForEach(CanvasViewMode.allCases) { mode in
+                Button {
+                    store.canvasViewMode = mode
+                } label: {
+                    Label(mode.titulo, systemImage: mode.simbolo)
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(store.canvasViewMode == mode ? .accentColor : .secondary)
+            }
+            Spacer()
+            if store.canvasFiltroMissao != nil {
+                Button("Limpar filtro de missão") {
+                    store.canvasFiltroMissao = nil
+                }
+                .font(.caption)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(.thinMaterial)
     }
 
     private var visibleWorldRect: CGRect {
@@ -66,7 +153,10 @@ struct CanvasView: View {
     private var nodeLayer: some View {
         let zoom = store.viewport.zoom
         let visible = visibleWorldRect.insetBy(dx: -80, dy: -80)
-        let ordered = store.nodes.values.sorted { ($0.z, $0.id.string) < ($1.z, $1.id.string) }
+        let ordered = store.nodes.values
+            .filter { store.nodeIsVisibleOnActiveFloor($0.id) }
+            .filter { store.matchesCanvasViewMode($0) }
+            .sorted { ($0.z, $0.id.string) < ($1.z, $1.id.string) }
         return ForEach(ordered, id: \.id) { node in
             let worldFrame = CGRect(x: node.posicao.x, y: node.posicao.y, width: node.tamanho.w, height: node.tamanho.h)
             NodeContainerView(
@@ -80,6 +170,8 @@ struct CanvasView: View {
                 x: (node.posicao.x - store.viewport.x) * zoom,
                 y: (node.posicao.y - store.viewport.y) * zoom
             )
+            .opacity(store.floorOpacity(for: node.id))
+            .allowsHitTesting(store.floorOpacity(for: node.id) >= 0.99)
         }
     }
 
@@ -95,38 +187,6 @@ struct CanvasView: View {
                 store.setViewport(v)
             }
             .onEnded { _ in panStart = nil }
-    }
-
-    private var magnificationGesture: some Gesture {
-        MagnificationGesture()
-            .onChanged { value in
-                if magStartZoom == nil { magStartZoom = store.viewport.zoom }
-                guard let start = magStartZoom else { return }
-                let alvo = start * Double(value)
-                store.zoom(by: alvo / store.viewport.zoom)
-            }
-            .onEnded { _ in magStartZoom = nil }
-    }
-
-    /// Scroll do trackpad/mouse faz pan; eventos sobre um terminal ficam com o
-    /// scrollback do SwiftTerm. O objeto `store` é capturado aqui (não `self`):
-    /// @EnvironmentObject não pode ser lido fora do ciclo do body.
-    private func installScrollMonitor() {
-        guard scrollMonitor == nil else { return }
-        let store = self.store
-        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard let window = event.window, window.isKeyWindow,
-                  let content = window.contentView else { return event }
-            let point = content.convert(event.locationInWindow, from: nil)
-            if let hit = content.hitTest(point), terminalAncestral(of: hit) != nil {
-                return event
-            }
-            var v = store.viewport
-            v.x -= Double(event.scrollingDeltaX) / v.zoom
-            v.y -= Double(event.scrollingDeltaY) / v.zoom
-            store.setViewport(v)
-            return nil
-        }
     }
 
     /// Esc duplo com um terminal focado devolve o foco ao canvas (Apêndice B).
@@ -163,10 +223,6 @@ struct CanvasView: View {
     }
 
     private func removeMonitors() {
-        if let monitor = scrollMonitor {
-            NSEvent.removeMonitor(monitor)
-            scrollMonitor = nil
-        }
         if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
             keyMonitor = nil
@@ -212,7 +268,7 @@ struct GridBackground: View {
             }
             context.stroke(path, with: .color(.primary.opacity(0.06)), lineWidth: 1)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .allowsHitTesting(false)
     }
 }
 
@@ -228,6 +284,7 @@ struct NodeContainerView: View {
     @EnvironmentObject private var store: AppStore
     @State private var dragBase: Ponto?
     @State private var resizeBase: Tamanho?
+    @State private var redimensionando = false
     @State private var hovering = false
     @State private var conectando = false
 
@@ -302,26 +359,47 @@ struct NodeContainerView: View {
     }
 
     private var resizeHandle: some View {
-        Image(systemName: "arrow.up.left.and.arrow.down.right")
-            .font(.system(size: 9))
-            .foregroundStyle(.secondary)
-            .padding(4)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .named(CanvasSpace.nome))
-                    .onChanged { _ in
-                        if resizeBase == nil { resizeBase = node.tamanho }
-                    }
-                    .onEnded { value in
-                        let base = resizeBase ?? node.tamanho
-                        resizeBase = nil
-                        let tamanho = Tamanho(
-                            w: max(160, base.w + Double(value.translation.width) / zoom),
-                            h: max(100, base.h + Double(value.translation.height) / zoom)
-                        )
-                        store.resizeNode(node.id, to: tamanho)
-                    }
-            )
+        Group {
+            if hovering || redimensionando || store.selection == node.id {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(6)
+                    .background(.regularMaterial, in: Circle())
+                    .contentShape(Circle())
+                    .help("Arraste para redimensionar")
+                    .accessibilityLabel("Redimensionar nó")
+                    .accessibilityHint("Arraste para alterar largura e altura")
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .named(CanvasSpace.nome))
+                            .onChanged { _ in
+                                redimensionando = true
+                                if resizeBase == nil { resizeBase = node.tamanho }
+                            }
+                            .onEnded { value in
+                                let base = resizeBase ?? node.tamanho
+                                resizeBase = nil
+                                redimensionando = false
+                                let minimo = tamanhoMinimo
+                                let tamanho = Tamanho(
+                                    w: max(minimo.w, base.w + Double(value.translation.width) / zoom),
+                                    h: max(minimo.h, base.h + Double(value.translation.height) / zoom)
+                                )
+                                store.resizeNode(node.id, to: tamanho)
+                            }
+                    )
+            }
+        }
+    }
+
+    private var tamanhoMinimo: Tamanho {
+        switch node {
+        case .terminal: return Tamanho(w: 320, h: 200)
+        case .nota: return Tamanho(w: 180, h: 120)
+        case .portal: return Tamanho(w: 320, h: 220)
+        case .desenho(let desenho) where desenho.texto != nil: return Tamanho(w: 32, h: 24)
+        case .desenho: return Tamanho(w: 80, h: 60)
+        }
     }
 
     /// Alça de conexão (§5.3): aparece no hover; arrastar até outro nó cria a
@@ -374,9 +452,13 @@ struct MinimapView: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
-        Canvas { context, size in
-            let nodes = Array(store.nodes.values)
-            guard !nodes.isEmpty else { return }
+        ZStack(alignment: .topLeading) {
+            Canvas { context, size in
+                let nodes = Array(store.nodes.values).filter { store.nodeIsVisibleOnActiveFloor($0.id) }
+                guard !nodes.isEmpty else { return }
+                func nodeRect(_ node: Node) -> CGRect {
+                    CGRect(x: node.posicao.x, y: node.posicao.y, width: node.tamanho.w, height: node.tamanho.h)
+                }
             var world = nodes.reduce(CGRect.null) { acc, node in
                 acc.union(CGRect(x: node.posicao.x, y: node.posicao.y, width: node.tamanho.w, height: node.tamanho.h))
             }
@@ -386,15 +468,29 @@ struct MinimapView: View {
                 height: Double(store.canvasSize.height) / store.viewport.zoom
             )
             world = world.union(viewRect).insetBy(dx: -200, dy: -200)
-            let scale = min(size.width / world.width, size.height / world.height)
+            let scale = min((size.width - 12) / world.width, (size.height - 12) / world.height)
+            let originX = (size.width - world.width * scale) / 2
+            let originY = (size.height - world.height * scale) / 2
             func map(_ rect: CGRect) -> CGRect {
                 CGRect(
-                    x: (rect.minX - world.minX) * scale,
-                    y: (rect.minY - world.minY) * scale,
+                    x: originX + (rect.minX - world.minX) * scale,
+                    y: originY + (rect.minY - world.minY) * scale,
                     width: max(2, rect.width * scale),
                     height: max(2, rect.height * scale)
                 )
             }
+                // A miniatura também mostra a topologia — é muito mais útil para
+                // encontrar um worker distante do que apenas uma nuvem de caixas.
+                for connection in store.connections.values {
+                    guard let from = store.nodes[connection.de], let to = store.nodes[connection.para],
+                          store.nodeIsVisibleOnActiveFloor(from.id), store.nodeIsVisibleOnActiveFloor(to.id) else { continue }
+                    let a = CGPoint(x: map(nodeRect(from)).midX, y: map(nodeRect(from)).midY)
+                    let b = CGPoint(x: map(nodeRect(to)).midX, y: map(nodeRect(to)).midY)
+                    var path = Path()
+                    path.move(to: a)
+                    path.addLine(to: b)
+                    context.stroke(path, with: .color(.secondary.opacity(0.24)), lineWidth: 0.7)
+                }
             for node in nodes {
                 let rect = map(CGRect(x: node.posicao.x, y: node.posicao.y, width: node.tamanho.w, height: node.tamanho.h))
                 let cor: SwiftUI.Color
@@ -405,10 +501,22 @@ struct MinimapView: View {
                 }
                 context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(cor.opacity(0.8)))
             }
-            context.stroke(Path(map(viewRect)), with: .color(.accentColor), lineWidth: 1)
+                context.fill(Path(roundedRect: map(viewRect), cornerRadius: 2), with: .color(.accentColor.opacity(0.10)))
+                context.stroke(Path(roundedRect: map(viewRect), cornerRadius: 2), with: .color(.accentColor.opacity(0.9)), lineWidth: 1.2)
+            }
+            .padding(5)
+            HStack(spacing: 4) {
+                Image(systemName: "map")
+                Text("MAPA")
+            }
+            .font(.system(size: 8, weight: .bold, design: .rounded))
+            .foregroundStyle(.secondary)
+            .padding(8)
         }
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .opacity(0.9)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.42), lineWidth: 0.8))
+        .shadow(color: .black.opacity(0.10), radius: 12, y: 5)
+        .opacity(0.94)
         .allowsHitTesting(false)
     }
 }
@@ -427,6 +535,15 @@ enum EstadoStyle {
     }
 
     static func rotulo(_ estado: SessionEstado?) -> String {
-        estado?.rawValue ?? "sem sessão"
+        switch estado {
+        case .rodando: return "rodando"
+        case .iniciando: return "iniciando"
+        case .esperandoHumano: return "aguardando"
+        case .aprovacaoPendente: return "aprovação"
+        case .ociosa: return "ociosa"
+        case .encerrada: return "encerrada"
+        case .morta: return "morta"
+        case .none: return "sem sessão"
+        }
     }
 }

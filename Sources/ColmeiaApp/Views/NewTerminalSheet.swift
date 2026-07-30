@@ -21,7 +21,7 @@ struct NewTerminalSheet: View {
         QuickStart(id: KnownAdapter.shell.rawValue, nome: "Shell", icone: "terminal"),
     ]
 
-    @State private var adapter: String = KnownAdapter.claudeCode.rawValue
+    @State private var adapter: String
     @State private var nome = ""
     @State private var nomeAuto = ""
     @State private var papel = ""
@@ -29,6 +29,10 @@ struct NewTerminalSheet: View {
     @State private var cwd = ""
     @State private var monitorar = true
     @State private var criando = false
+
+    init(adapterInicial: String = KnownAdapter.claudeCode.rawValue) {
+        _adapter = State(initialValue: adapterInicial)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -40,7 +44,7 @@ struct NewTerminalSheet: View {
                     Button {
                         adapter = qs.id
                         if nome.isEmpty || nome == nomeAuto {
-                            nome = store.nomeAutomatico(adapter: qs.id)
+                            nome = store.suggestedTerminalName(adapter: qs.id)
                             nomeAuto = nome
                         }
                     } label: {
@@ -88,7 +92,7 @@ struct NewTerminalSheet: View {
         .frame(width: 480)
         .onAppear {
             if nome.isEmpty {
-                nome = store.nomeAutomatico(adapter: adapter)
+                nome = store.suggestedTerminalName(adapter: adapter)
                 nomeAuto = nome
             }
         }

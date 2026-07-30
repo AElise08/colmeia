@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import ColmeiaEngine
 import ColmeiaKit
 
@@ -7,16 +11,19 @@ import ColmeiaKit
 // COLMEIA_ROOT também é aceito (útil em testes/integração).
 
 var rootOverride: String? = ProcessInfo.processInfo.environment["COLMEIA_ROOT"]
+var tcpPort: UInt16 = 0
 var argIterator = CommandLine.arguments.dropFirst().makeIterator()
 while let arg = argIterator.next() {
     switch arg {
     case "--root":
         rootOverride = argIterator.next()
+    case "--tcp-port":
+        tcpPort = UInt16(argIterator.next() ?? "") ?? 0
     case "--version":
         print(ColmeiaEngineInfo.banner())
         exit(0)
     case "--help", "-h":
-        print("uso: colmeia-engine [--root <dir>] [--version]")
+        print("uso: colmeia-engine [--root <dir>] [--tcp-port <port>] [--version]")
         exit(0)
     default:
         FileHandle.standardError.write(Data("argumento desconhecido: \(arg)\n".utf8))
@@ -25,7 +32,7 @@ while let arg = argIterator.next() {
 }
 
 let paths = rootOverride.map { ColmeiaPaths(root: URL(fileURLWithPath: $0, isDirectory: true)) } ?? ColmeiaPaths()
-let engine = Engine(paths: paths)
+let engine = Engine(paths: paths, tcpPort: tcpPort)
 
 // EPIPE vira erro de write, não sinal fatal.
 signal(SIGPIPE, SIG_IGN)

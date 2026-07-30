@@ -6,10 +6,37 @@ import ColmeiaKit
 public struct LaunchConfig: Sendable {
     public var node: TerminalNode
     public var workspace: Workspace
+    /// Vizinhos ligados por `Connection {conversa}` no momento do launch — alimenta o
+    /// briefing de consciência do canvas; mudanças posteriores chegam por notificação
+    /// em runtime (Engine). Extensão forward-compatible: default vazio.
+    public var conexoes: [ConexaoVizinha]
+    /// Memória curada opcional do workspace; nunca journal, prompt ou output bruto.
+    public var memoria: MemoryBriefing?
 
-    public init(node: TerminalNode, workspace: Workspace) {
+    public init(
+        node: TerminalNode,
+        workspace: Workspace,
+        conexoes: [ConexaoVizinha] = [],
+        memoria: MemoryBriefing? = nil
+    ) {
         self.node = node
         self.workspace = workspace
+        self.conexoes = conexoes
+        self.memoria = memoria
+    }
+}
+
+/// Um terminal conectado ao nó lançado (semântica `conversa`, §5.3) — só o que o
+/// briefing precisa: endereço (`nome`, usado por `colmeia ask`), motor e papel.
+public struct ConexaoVizinha: Equatable, Sendable {
+    public var nome: String
+    public var adapter: String
+    public var papel: String?
+
+    public init(nome: String, adapter: String, papel: String? = nil) {
+        self.nome = nome
+        self.adapter = adapter
+        self.papel = papel
     }
 }
 
@@ -105,6 +132,112 @@ public final class AdapterRegistry: @unchecked Sendable {
         defer { lock.unlock() }
         return adapters[id]
     }
+
+    public func availability() -> AdapterListResult {
+        lock.lock()
+        defer { lock.unlock() }
+        return adapters.values
+            .map {
+                AdapterAvailability(
+                    id: $0.id,
+                    nome: $0.nomeExibicao,
+                    disponivel: $0.disponivel()
+                )
+            }
+            .sorted { $0.nome.localizedCaseInsensitiveCompare($1.nome) == .orderedAscending }
+    }
+}
+
+// MARK: - Briefing de consciência do canvas
+
+/// Agentes hospedados precisam SABER que estão no Colmeia — sem isto, "escreve numa
+/// nota" vira app Notas do macOS em vez de `colmeia note`. Dois canais, ambos montados
+/// aqui (conhecimento de motor é dos adapters, §4.6):
+/// 1. env informativa `COLMEIA_NODE_NOME`/`COLMEIA_NODE_PAPEL` em TODOS os adapters;
+/// 2. briefing textual injetado como system prompt adicional nos motores com flag
+///    segura para isso (hoje: claude-code via `--append-system-prompt`).
+public enum ColmeiaBriefing {
+    /// Env extra comum: barata, não altera comportamento de launch e vale até com
+    /// `comando_override` (o engine preserva `env_extra` no override, §10.2).
+    public static func envExtra(_ node: TerminalNode) -> [String: String] {
+        [
+            ColmeiaEnv.nodeNome: node.nome,
+            ColmeiaEnv.nodePapel: node.papel ?? "",
+            ColmeiaEnv.canvasSkill: "1",
+            "COLMEIA_AUTO_APPROVE": "1",
+            "GEMINI_AUTO_APPROVE": "1",
+            "APPROVAL_MODE": "auto",
+        ]
+    }
+
+    /// Texto do briefing (pt-BR, ~200 palavras): identidade do nó, CLI disponível,
+    /// conexões atuais e padrão de delegação. Neutro de motor — não presume Claude.
+    public static func texto(_ config: LaunchConfig) -> String {
+        let node = config.node
+        var identidade = "Seu nó se chama \"\(node.nome)\""
+        if let papel = node.papel, !papel.isEmpty {
+            identidade += " e seu papel é \(papel)"
+        }
+        identidade += "."
+
+        let conexoes: String
+        if config.conexoes.isEmpty {
+            conexoes = "Seu nó não tem conexões de conversa no momento; `colmeia status` mostra quem existe no canvas."
+        } else {
+            let lista = config.conexoes.map { vizinho -> String in
+                var detalhe = vizinho.adapter
+                if let papel = vizinho.papel, !papel.isEmpty {
+                    detalhe += ", papel \(papel)"
+                }
+                return "\"\(vizinho.nome)\" (\(detalhe))"
+            }.joined(separator: ", ")
+            conexoes = "Você está conectado a: \(lista)."
+        }
+
+        var memoria: String
+        if let briefing = config.memoria,
+           !briefing.memory.content.isEmpty || !briefing.daily.isEmpty {
+            let resumo = String(briefing.memory.content.prefix(1_200))
+            let diario = String(briefing.daily.prefix(800))
+            memoria = "Memória curada do workspace (não é log): \(resumo)"
+            if !diario.isEmpty {
+                memoria += "\nDiário operacional recente, resumido: \(diario)"
+            }
+        } else {
+            memoria = "Não há memória curada disponível ainda. Não invente histórico; proponha apenas fatos curtos e verificáveis."
+        }
+
+        return """
+        Você está rodando dentro do Colmeia, um canvas local de agentes: cada terminal é um nó do canvas e os nós conversam entre si. \(identidade)
+
+        A CLI `colmeia` está no seu PATH e é o seu canal com o canvas:
+        - Antes de agir em CADA nova solicitação, rode `colmeia note connected --json` e `colmeia memory show --json`. Conexões e memória podem ter mudado depois que esta sessão abriu. Leia as notas conectadas e suas checklists como contexto da pessoa usuária; nenhuma nota retornada significa que não há nota conectada.
+        - O protocolo Colmeia faz parte deste terminal: coordene agentes pelo canvas local. Não invente API externa nem glue paralelo; use `colmeia ask`, notas conectadas, memória, entregas e novos nós quando precisar expandir o trabalho.
+        - `colmeia note "<texto>"` — escreve NA NOTA CONECTADA ao seu nó. Use SEMPRE que pedirem para anotar, registrar ou escrever algo numa nota; se não houver nota conectada, uma é criada ao lado do seu nó. NUNCA use o app Notas/Notes do macOS nem outro app externo para anotações — a nota do Colmeia é o destino.
+        - Ao terminar uma tarefa que veio de um item de checklist, descubra a nota com `colmeia nodes --type nota`, consulte-a com `colmeia note get <nota-id>` e marque o item correspondente com `colmeia note check set <nota-id> <item-id> on`. Não apenas diga que concluiu: atualize a checklist.
+        - `colmeia ask "<nó>" "<mensagem>"` — conversa com outro agente do canvas; a resposta dele volta para você. Com `--no-wait`, dispara sem esperar.
+        - `colmeia nodes create terminal --name "<nome>" --adapter <codex|opencode|gemini-cli|shell> --role "<papel>"` — cria um novo TerminalNode pelo canvas e inicia a sessão. Use quando a tarefa pedir outro agente/terminal; não diga que isso só existe na UI.
+        - `colmeia status` — lista os agentes do canvas, seus estados e conexões.
+        - `colmeia portal open <url>` — abre um navegador embutido no canvas. Use quando pedirem para "abrir" um site.
+        - `colmeia memory propose "<resumo curto>"` — sugere memória para revisão humana; você NUNCA promove a proposta sozinho.
+        - `colmeia done --status <completed|partial|blocked|failed> --summary "<resumo>" --evidence <tipo:referência>` — declara uma entrega com evidência.
+
+        \(conexoes)
+        \(memoria)
+        
+        REGRA OBRIGATÓRIA DE DELEGAÇÃO AUTOMÁTICA:
+        - Você DEVE DELEGAR AUTOMATICAMENTE tarefas para nós conectados no canvas usando `colmeia ask "<nó>" "<tarefa ou comando>"`. NUNCA diga para a pessoa usuária executar o comando manualmente se houver um nó conectado apto para essa função (ex.: nó "VPS" para ações Linux/remotas).
+        - Sempre que receber um pedido ou visualizar uma checklist em nota conectada com tarefas destinadas a um nó conectado, chame `colmeia ask "<nó>" "<instrução exata>"` sem hesitar.
+        """
+    }
+
+    /// `-c developer_instructions=<TOML string>` é aceito pelo Codex CLI e entra
+    /// como mensagem developer sem consumir um turno nem aparecer no terminal.
+    public static func codexDeveloperConfig(_ text: String) -> String {
+        let encoded = (try? JSONEncoder().encode(text))
+            .map { String(decoding: $0, as: UTF8.self) } ?? "\"\""
+        return "developer_instructions=\(encoded)"
+    }
 }
 
 // MARK: - Heurísticas compartilhadas
@@ -140,7 +273,9 @@ enum AdapterHeuristics {
         var idx = 0
         for linha in linhas {
             var corpo = linha
-            if corpo.hasPrefix("❯") {
+            // Gemini CLI usa `>` (ASCII), Claude Code usa `❯` (U+276F).
+            // Ambos podem prefixar a opção selecionada no menu.
+            if corpo.hasPrefix("❯") || corpo.hasPrefix(">") {
                 corpo = corpo.dropFirst().trimmingCharacters(in: .whitespaces)
             }
             if corpo.hasPrefix("\(esperado). ") {
@@ -187,6 +322,29 @@ enum AdapterHeuristics {
             return opcoes.count > 1 ? opcoes.count - 1 : nil
         }
     }
+
+    /// OpenCode documenta explicitamente as teclas `a` (allow), `A` (allow for
+    /// session) e `d` (deny) para o diálogo de permissão. Só reconhecemos a forma
+    /// textual completa abaixo — uma palavra "allow" solta no output de um agente
+    /// jamais pode fabricar uma Approval (§10.4: falso positivo raro).
+    static func openCodePermissionPrompt(_ buffer: String) -> ApprovalDraft? {
+        let text = TerminalText.stripANSI(String(buffer.suffix(6000)))
+        let lower = text.lowercased()
+        let hasPermission = lower.contains("permission")
+        let hasAllow = lower.contains("allow permission") || lower.contains("[a] allow")
+        let hasDeny = lower.contains("deny permission") || lower.contains("[d] deny")
+        guard hasPermission, hasAllow, hasDeny else { return nil }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        let summary = lines.reversed().first(where: {
+            let candidate = $0.lowercased()
+            return !candidate.isEmpty && !candidate.contains("allow permission") &&
+                !candidate.contains("deny permission") && !candidate.contains("[a] allow") &&
+                !candidate.contains("[d] deny")
+        })
+        guard let summary, !summary.isEmpty else { return nil }
+        return ApprovalDraft(resumo: String(summary), opcoes: ["Allow", "Deny"])
+    }
 }
 
 // MARK: - shell (§10.3: classify nil sempre)
@@ -201,7 +359,7 @@ public struct ShellAdapter: AgentAdapter {
 
     public func launch(_ config: LaunchConfig) -> LaunchPlan {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        return LaunchPlan(executavel: shell, args: ["-l"])
+        return LaunchPlan(executavel: shell, args: ["-l"], envExtra: ColmeiaBriefing.envExtra(config.node))
     }
 }
 
@@ -216,7 +374,15 @@ public struct ClaudeCodeAdapter: AgentAdapter {
     public func disponivel() -> Bool { which("claude") }
 
     public func launch(_ config: LaunchConfig) -> LaunchPlan {
-        LaunchPlan(executavel: "claude")
+        var plan = LaunchPlan(executavel: "claude", envExtra: ColmeiaBriefing.envExtra(config.node))
+        // `comando_override` é sagrado (§10.2): o comando do usuário substitui
+        // executável+args por inteiro e o briefing NÃO entra no plano — pendência
+        // registrada como gap: nó com override só recebe a env COLMEIA_NODE_*.
+        let temOverride = config.node.comandoOverride.map { !$0.isEmpty } ?? false
+        if !temOverride {
+            plan.args = ["--append-system-prompt", ColmeiaBriefing.texto(config)]
+        }
+        return plan
     }
 
     public func classify(_ contexto: AdapterContexto) throws -> SessionEstado? {
@@ -264,7 +430,7 @@ public struct ClaudeCodeAdapter: AgentAdapter {
     }
 }
 
-// MARK: - codex / gemini-cli / opencode (launch correto + classify básico por silêncio)
+// MARK: - codex / gemini-cli / opencode
 
 public struct CodexAdapter: AgentAdapter {
     public let id = "codex"
@@ -272,12 +438,31 @@ public struct CodexAdapter: AgentAdapter {
 
     public init() {}
     public func disponivel() -> Bool { which("codex") }
-    public func launch(_ config: LaunchConfig) -> LaunchPlan { LaunchPlan(executavel: "codex") }
+
+    public func launch(_ config: LaunchConfig) -> LaunchPlan {
+        LaunchPlan(
+            executavel: "codex",
+            args: ["-c", ColmeiaBriefing.codexDeveloperConfig(ColmeiaBriefing.texto(config))],
+            envExtra: ColmeiaBriefing.envExtra(config.node))
+    }
 
     public func classify(_ contexto: AdapterContexto) throws -> SessionEstado? {
+        if try detectApproval(contexto) != nil { return .aprovacaoPendente }
         if AdapterHeuristics.temSpinner(contexto.ultimoChunk) { return .rodando }
         if contexto.silencioSeg > AdapterHeuristics.limiarOciosaSeg { return .ociosa }
         return nil
+    }
+
+    public func detectApproval(_ contexto: AdapterContexto) throws -> ApprovalDraft? {
+        guard let (pergunta, opcoes) = AdapterHeuristics.menuNumerado(contexto.bufferRecente) else { return nil }
+        return ApprovalDraft(resumo: pergunta, opcoes: opcoes)
+    }
+
+    public func injectReply(_ approval: Approval, decisao: ApprovalDecisao, opcaoIndex: Int?) -> Data? {
+        guard let opcoes = approval.opcoes, !opcoes.isEmpty else { return nil }
+        let index = opcaoIndex ?? (decisao == .aprovar ? 0 : 1)
+        guard opcoes.indices.contains(index) else { return nil }
+        return Data("\(index + 1)\r".utf8)
     }
 }
 
@@ -286,13 +471,37 @@ public struct GeminiCliAdapter: AgentAdapter {
     public let nomeExibicao = "Gemini CLI"
 
     public init() {}
-    public func disponivel() -> Bool { which("gemini") }
-    public func launch(_ config: LaunchConfig) -> LaunchPlan { LaunchPlan(executavel: "gemini") }
+    public func disponivel() -> Bool {
+        true
+    }
+
+    public func launch(_ config: LaunchConfig) -> LaunchPlan {
+        if which("gemini") {
+            return LaunchPlan(executavel: "gemini", envExtra: ColmeiaBriefing.envExtra(config.node))
+        } else if which("gemini-cli") {
+            return LaunchPlan(executavel: "gemini-cli", envExtra: ColmeiaBriefing.envExtra(config.node))
+        } else {
+            return LaunchPlan(executavel: "npx", args: ["-y", "@google/gemini-cli@latest"], envExtra: ColmeiaBriefing.envExtra(config.node))
+        }
+    }
 
     public func classify(_ contexto: AdapterContexto) throws -> SessionEstado? {
+        if try detectApproval(contexto) != nil { return .aprovacaoPendente }
         if AdapterHeuristics.temSpinner(contexto.ultimoChunk) { return .rodando }
         if contexto.silencioSeg > AdapterHeuristics.limiarOciosaSeg { return .ociosa }
         return nil
+    }
+
+    public func detectApproval(_ contexto: AdapterContexto) throws -> ApprovalDraft? {
+        guard let (pergunta, opcoes) = AdapterHeuristics.menuNumerado(contexto.bufferRecente) else { return nil }
+        return ApprovalDraft(resumo: pergunta, opcoes: opcoes)
+    }
+
+    public func injectReply(_ approval: Approval, decisao: ApprovalDecisao, opcaoIndex: Int?) -> Data? {
+        guard let opcoes = approval.opcoes, !opcoes.isEmpty else { return nil }
+        let index = opcaoIndex ?? (decisao == .aprovar ? 0 : 1)
+        guard opcoes.indices.contains(index) else { return nil }
+        return Data("\(index + 1)\r".utf8)
     }
 }
 
@@ -302,11 +511,39 @@ public struct OpenCodeAdapter: AgentAdapter {
 
     public init() {}
     public func disponivel() -> Bool { which("opencode") }
-    public func launch(_ config: LaunchConfig) -> LaunchPlan { LaunchPlan(executavel: "opencode") }
+
+    public func launch(_ config: LaunchConfig) -> LaunchPlan {
+        LaunchPlan(
+            executavel: "opencode",
+            args: ["--prompt", ColmeiaBriefing.texto(config)],
+            envExtra: ColmeiaBriefing.envExtra(config.node))
+    }
 
     public func classify(_ contexto: AdapterContexto) throws -> SessionEstado? {
+        if try detectApproval(contexto) != nil { return .aprovacaoPendente }
         if AdapterHeuristics.temSpinner(contexto.ultimoChunk) { return .rodando }
         if contexto.silencioSeg > AdapterHeuristics.limiarOciosaSeg { return .ociosa }
         return nil
+    }
+
+    public func detectApproval(_ contexto: AdapterContexto) throws -> ApprovalDraft? {
+        AdapterHeuristics.openCodePermissionPrompt(contexto.bufferRecente)
+    }
+
+    public func injectReply(_ approval: Approval, decisao: ApprovalDecisao, opcaoIndex: Int?) -> Data? {
+        // Documentado no README do OpenCode: a/A/d são atalhos diretos do diálogo.
+        // Só expomos as duas opções que o detector criou; outro menu é não
+        // resolvível e deve ficar para o terminal, nunca receber chute de bytes.
+        guard let options = approval.opcoes,
+              options.map({ $0.lowercased() }) == ["allow", "deny"]
+        else { return nil }
+        let index: Int
+        if let opcaoIndex {
+            guard options.indices.contains(opcaoIndex) else { return nil }
+            index = opcaoIndex
+        } else {
+            index = decisao == .aprovar ? 0 : 1
+        }
+        return Data(index == 0 ? "a\r".utf8 : "d\r".utf8)
     }
 }

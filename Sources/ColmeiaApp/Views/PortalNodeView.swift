@@ -14,6 +14,7 @@ struct PortalNodeView<Drag: Gesture>: View {
     @EnvironmentObject private var store: AppStore
     @FocusState private var urlFocada: Bool
     @State private var urlDigitada = ""
+    @State private var confirmandoDelete = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,9 +30,7 @@ struct PortalNodeView<Drag: Gesture>: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .contextMenu {
             Button("Recarregar") { controller.recarregar() }
-            Button("Apagar portal", role: .destructive) {
-                Task { await store.deleteNode(node.id) }
-            }
+            Button("Apagar portal", role: .destructive) { confirmandoDelete = true }
         }
         .onAppear {
             urlDigitada = node.url == "about:blank" ? "" : node.url
@@ -54,16 +53,21 @@ struct PortalNodeView<Drag: Gesture>: View {
                 urlDigitada = nova
             }
         }
+        .confirmationDialog("Apagar este portal?", isPresented: $confirmandoDelete) {
+            Button("Apagar portal", role: .destructive) { Task { await store.deleteNode(node.id) } }
+        } message: {
+            Text("A página será removida do canvas.")
+        }
     }
 
     // MARK: - Barra
 
     private var barra: some View {
         HStack(spacing: 4) {
-            Image(systemName: "globe")
-                .font(.system(size: 10))
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 3)
+                .frame(width: 22, height: 20)
                 .contentShape(Rectangle())
                 .gesture(dragGesture)
                 .help("Arraste para mover o portal")
@@ -100,6 +104,14 @@ struct PortalNodeView<Drag: Gesture>: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+
+            Button { confirmandoDelete = true } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(.secondary)
+            .help("Apagar portal")
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -165,7 +177,7 @@ struct NewPortalPopover: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Novo Portal")
                 .font(.headline)
-            TextField("https://…  (vazio = página em branco)", text: $url)
+            TextField("URL ou busca (vazio = DuckDuckGo)", text: $url)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12))
                 .frame(width: 320)

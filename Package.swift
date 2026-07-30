@@ -1,19 +1,32 @@
 // swift-tools-version: 6.0
-// Colmeia — canvas de agentes (spec: ~/colmeia-spec.md).
+// Colmeia — canvas colaborativo de agentes (spec: docs/SPEC.md).
 // Sem xcodebuild nesta máquina: apenas `swift build` / `swift test`.
 import PackageDescription
 
 // Modo v5 em todos os targets para evitar churn de strict concurrency (decisão do projeto).
 let swiftSettings: [SwiftSetting] = [.swiftLanguageMode(.v5)]
 
+let platforms: [SupportedPlatform]? = {
+    #if os(macOS)
+    return [.macOS(.v15)]
+    #else
+    return nil
+    #endif
+}()
+
 let package = Package(
     name: "Colmeia",
-    platforms: [.macOS(.v15)],
+    platforms: platforms,
     products: [
         .library(name: "ColmeiaKit", targets: ["ColmeiaKit"]),
         .library(name: "ColmeiaEngine", targets: ["ColmeiaEngine"]),
+        .library(name: "ColmeiaHub", targets: ["ColmeiaHub"]),
         .executable(name: "colmeia-engine", targets: ["colmeia-engine"]),
         .executable(name: "colmeia", targets: ["colmeia"]),
+        .executable(name: "colmeia-hub", targets: ["colmeia-hub"]),
+        .executable(name: "colmeia-worker", targets: ["colmeia-worker"]),
+        .executable(name: "colmeia-tcp-bridge", targets: ["colmeia-tcp-bridge"]),
+        .executable(name: "colmeia-sync", targets: ["colmeia-sync"]),
         .executable(name: "ColmeiaApp", targets: ["ColmeiaApp"]),
     ],
     dependencies: [
@@ -32,6 +45,13 @@ let package = Package(
             dependencies: ["ColmeiaKit"],
             swiftSettings: swiftSettings
         ),
+        // Hub de colaboração (§3.1). Servidor de rede sem PTY,
+        // AppKit ou dependências Darwin — compila em macOS e Linux.
+        .target(
+            name: "ColmeiaHub",
+            dependencies: ["ColmeiaKit"],
+            swiftSettings: swiftSettings
+        ),
         // Binário fino do daemon.
         .executableTarget(
             name: "colmeia-engine",
@@ -41,6 +61,29 @@ let package = Package(
         // CLI companheira (§13): ask / note / status.
         .executableTarget(
             name: "colmeia",
+            dependencies: ["ColmeiaKit"],
+            swiftSettings: swiftSettings
+        ),
+        // Binário do Hub colaborativo (§3.1).
+        .executableTarget(
+            name: "colmeia-hub",
+            dependencies: ["ColmeiaHub", "ColmeiaKit"],
+            swiftSettings: swiftSettings
+        ),
+        // Worker remoto headless no Linux/macOS (§4.1).
+        .executableTarget(
+            name: "colmeia-worker",
+            dependencies: ["ColmeiaKit"],
+            swiftSettings: swiftSettings
+        ),
+        // TCP→Unix bridge para tunnel do Engine (sem dependências).
+        .executableTarget(
+            name: "colmeia-tcp-bridge",
+            swiftSettings: swiftSettings
+        ),
+        // Sincroniza workspaces do engine local para o Hub remoto.
+        .executableTarget(
+            name: "colmeia-sync",
             dependencies: ["ColmeiaKit"],
             swiftSettings: swiftSettings
         ),
@@ -59,7 +102,7 @@ let package = Package(
         // executar o produto de teste (build passa, run silenciosamente não acontece).
         .testTarget(
             name: "ColmeiaTests",
-            dependencies: ["ColmeiaKit", "ColmeiaEngine"],
+            dependencies: ["ColmeiaKit", "ColmeiaEngine", "ColmeiaHub"],
             swiftSettings: swiftSettings
         ),
     ]

@@ -148,6 +148,34 @@ struct DocumentStoreTests {
         }
     }
 
+    @Test func updateDeNoRemovidoTemErroEstavelESemMascararParametrosInvalidos() throws {
+        let state = try makeState(tempRoot())
+        let node = makeTerminalNode(nome: "efêmero")
+        _ = try state.applyProposal(proposal(.nodeAdd(NodeAddOpPayload(node: .terminal(node)))), liveNodeIDs: [])
+        _ = try state.applyProposal(proposal(.nodeDelete(NodeDeleteOpPayload(id: node.id))), liveNodeIDs: [])
+
+        do {
+            _ = try state.applyProposal(
+                proposal(.nodeUpdate(NodeUpdateOpPayload(id: node.id, campos: .object([:])))),
+                liveNodeIDs: [])
+            Issue.record("update após delete deveria informar node_not_found")
+        } catch let error as ProtocolError {
+            #expect(error.known == .node_not_found)
+        }
+
+        let existing = makeTerminalNode(nome: "presente")
+        _ = try state.applyProposal(proposal(.nodeAdd(NodeAddOpPayload(node: .terminal(existing)))), liveNodeIDs: [])
+        do {
+            _ = try state.applyProposal(
+                proposal(.nodeUpdate(NodeUpdateOpPayload(
+                    id: existing.id, campos: .object(["id": .string(existing.id.string)])))),
+                liveNodeIDs: [])
+            Issue.record("campos imutáveis devem continuar visíveis como invalid_params")
+        } catch let error as ProtocolError {
+            #expect(error.known == .invalid_params)
+        }
+    }
+
     @Test func corrupcaoNoMeioDoJsonlQuarentenaEReconstrucaoParcial() throws {
         let root = tempRoot()
         let state = try makeState(root)
@@ -352,6 +380,21 @@ struct SessionEnvTests {
         ]
         let limpa = SessionEnv.inherited(from: base)
         #expect(limpa == ["PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-x"])
+    }
+
+    @Test func pathConvencionalIncluiInstaladorDoOpenCode() {
+        let home = URL(fileURLWithPath: "/tmp/colmeia-home-fixture", isDirectory: true)
+        let paths = executableSearchPath(environment: ["PATH": "/usr/bin"], homeDirectory: home)
+        #expect(paths.contains("/tmp/colmeia-home-fixture/.opencode/bin"))
+    }
+
+    @Test func inventarioDeAdaptersOrdenaEInformaDisponibilidade() {
+        let registry = AdapterRegistry()
+        registry.register(ShellAdapter())
+        let result = registry.availability()
+        #expect(result == [
+            AdapterAvailability(id: KnownAdapter.shell.rawValue, nome: "Shell", disponivel: true),
+        ])
     }
 }
 
@@ -708,6 +751,99 @@ struct EngineSocketTests {
         // exatamente [inicial, 100x40] — o resize idêntico foi deduplicado
         #expect(resizes == [ResizeEventPayload(cols: 91, rows: 23), ResizeEventPayload(cols: 100, rows: 40)])
         client.close()
+    }
+
+    @Test func sessionTermEscalaSemDeixarAInterfaceEsperandoCincoSegundos() async throws {
+        let (engine, client, _) = try boot()
+        defer { engine.stop() }
+        _ = try await client.hello(client: "test")
+        let created = try await client.call(
+            .workspaceCreate, params: WorkspaceCreateParams(nome: "kill-fast"),
+            expecting: WorkspaceResult.self)
+        let node = makeTerminalNode(
+            nome: "Resistente",
+            override: "trap '' TERM; while :; do sleep 1; done")
+        _ = try await client.call(
+            .docApply,
+            params: DocApplyParams(
+                workspaceID: created.workspace.id,
+                ops: [proposal(.nodeAdd(NodeAddOpPayload(node: .terminal(node))))]))
+        let started = try await client.call(
+            .sessionStart,
+            params: SessionStartParams(workspaceID: created.workspace.id, nodeID: node.id),
+            expecting: SessionResult.self)
+        try await Task.sleep(for: .milliseconds(100))
+
+        let inicio = Date()
+        _ = try await client.call(
+            .sessionKill,
+            params: SessionKillParams(sessionID: started.session.id, sinal: .term))
+        var finalizou = false
+        while Date().timeIntervalSince(inicio) < 2.5 {
+            let sessions = try await client.call(
+                .sessionList,
+                params: SessionListParams(workspaceID: created.workspace.id),
+                expecting: [Session].self)
+            if sessions.first(where: { $0.id == started.session.id })?.estado.isViva == false {
+                finalizou = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        #expect(finalizou)
+        #expect(Date().timeIntervalSince(inicio) < 2.5)
+        client.close()
+    }
+
+    @Test func processoFilhoEnxergaGeometriaInicialDoPTY() throws {
+        let handle = try PTY.spawn(
+            executable: "/bin/sh",
+            args: ["-c", "stty size"],
+            environment: ["PATH": "/usr/bin:/bin", "TERM": "xterm-256color"],
+            cwd: NSTemporaryDirectory(),
+            cols: 76,
+            rows: 22)
+        defer { close(handle.master) }
+        let masterSize = try #require(PTY.size(master: handle.master))
+        #expect(masterSize.cols == 76)
+        #expect(masterSize.rows == 22)
+        var buffer = [UInt8](repeating: 0, count: 256)
+        let count = read(handle.master, &buffer, buffer.count)
+        var status: Int32 = 0
+        waitpid(handle.pid, &status, 0)
+        let output = count > 0
+            ? String(decoding: buffer.prefix(count), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        #expect(output == "22 76")
+    }
+
+    @Test func spawnResolveExecutavelPeloPATHFornecidoAoFilho() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tool = root.appendingPathComponent("colmeia-path-probe")
+        try Data("#!/bin/sh\nprintf path-resolvido\n".utf8).write(to: tool)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o755))],
+            ofItemAtPath: tool.path)
+        let environment = ["PATH": root.path, "TERM": "xterm-256color"]
+        #expect(executablePath("colmeia-path-probe", environment: environment) == tool.path)
+
+        let handle = try PTY.spawn(
+            executable: "colmeia-path-probe",
+            args: [],
+            environment: environment,
+            cwd: root.path,
+            cols: 40,
+            rows: 10)
+        defer { close(handle.master) }
+        var buffer = [UInt8](repeating: 0, count: 256)
+        let count = read(handle.master, &buffer, buffer.count)
+        var status: Int32 = 0
+        waitpid(handle.pid, &status, 0)
+        let output = count > 0 ? String(decoding: buffer.prefix(count), as: UTF8.self) : ""
+        #expect(output == "path-resolvido")
     }
 
     /// §10.2 — o spawn do PTY (caminho engine-agnóstico, vale para todos os adapters)

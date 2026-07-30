@@ -42,6 +42,13 @@ struct RoutinesPanel: View {
                                         .padding(.horizontal, 5)
                                         .background(.gray.opacity(0.3), in: Capsule())
                                 }
+                                if routine.pendenteAtrasada {
+                                    Text("pendente atrasada")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 5)
+                                        .background(.orange.opacity(0.25), in: Capsule())
+                                        .help("Esta rotina única venceu enquanto o engine estava desligado. Ela só roda se você decidir manualmente.")
+                                }
                             }
                             Text("→ \(store.nodeName(routine.alvo)) · \(descricaoAgenda(routine.agenda))")
                                 .font(.caption)
@@ -50,6 +57,10 @@ struct RoutinesPanel: View {
                                 Text("próxima: \(proxima.formatted(date: .abbreviated, time: .shortened))")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                            } else if routine.pendenteAtrasada {
+                                Text("Venceu sem executar; escolha Rodar agora ou edite/desabilite.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
                             }
                         }
                         Spacer()

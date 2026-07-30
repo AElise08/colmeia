@@ -2,7 +2,9 @@ import Foundation
 import ColmeiaKit
 
 /// `colmeia status [--json] [--workspace <id>]` (§13.4) — como um Lead "enxerga a sala":
-/// nós terminais do workspace com nome, papel, adapter, estado e idade do estado.
+/// nós terminais do workspace com nome, papel, adapter, estado e idade do estado,
+/// mais a topologia de conexões (quem pode delegar para quem) e qual nó é "você"
+/// quando chamado de dentro de uma sessão gerenciada.
 enum StatusCommand {
     static let usage = "uso: colmeia status [--json] [--workspace <workspace-id>]"
 
@@ -14,24 +16,36 @@ enum StatusCommand {
         var estado: String?
         var estadoHaSeg: Double?
         var sessionID: ULID?
+        /// true quando o nó é o chamador (COLMEIA_NODE_ID da sessão gerenciada).
+        var voce: Bool
 
         enum CodingKeys: String, CodingKey {
-            case nome, papel, adapter, estado
+            case nome, papel, adapter, estado, voce
             case nodeID = "node_id"
             case estadoHaSeg = "estado_ha_seg"
             case sessionID = "session_id"
         }
     }
 
+    /// Conexão do canvas com as pontas resolvidas para endereços úteis: nome do
+    /// terminal (o que `colmeia ask` aceita) ou o tipo do nó (nota/desenho/portal).
+    struct ConnRow: Codable {
+        var id: ULID
+        var de: String
+        var para: String
+        var semantica: String
+    }
+
     struct Report: Codable {
         var workspaceID: ULID
         var nos: [Row]
+        var conexoes: [ConnRow]
         var notas: Int
         var desenhos: Int
         var portais: Int
 
         enum CodingKeys: String, CodingKey {
-            case nos, notas, desenhos, portais
+            case nos, conexoes, notas, desenhos, portais
             case workspaceID = "workspace_id"
         }
     }
@@ -123,13 +137,25 @@ enum StatusCommand {
                     adapter: terminal.adapter,
                     estado: vivaOuRecente?.session.estado.rawValue,
                     estadoHaSeg: estadoDesde.map { max(0, now.timeIntervalSince($0)) },
-                    sessionID: vivaOuRecente?.session.id
+                    sessionID: vivaOuRecente?.session.id,
+                    voce: terminal.id == context.nodeID
                 ))
             }
         }
         rows.sort { $0.nome.lowercased() < $1.nome.lowercased() }
 
-        let report = Report(workspaceID: workspaceID, nos: rows, notas: notas, desenhos: desenhos, portais: portais)
+        let conexoes = snapshot.documentSnapshot.connections.map { connection in
+            ConnRow(
+                id: connection.id,
+                de: endereco(connection.de, in: snapshot.documentSnapshot),
+                para: endereco(connection.para, in: snapshot.documentSnapshot),
+                semantica: connection.semantica.rawValue
+            )
+        }
+
+        let report = Report(
+            workspaceID: workspaceID, nos: rows, conexoes: conexoes,
+            notas: notas, desenhos: desenhos, portais: portais)
         if json {
             let encoder = ColmeiaJSON.encoder()
             encoder.outputFormatting.insert(.prettyPrinted)
@@ -208,6 +234,15 @@ enum StatusCommand {
 
     // MARK: - Saída
 
+    /// Endereço legível de uma ponta de conexão: nome do terminal ou tipo do nó.
+    private static func endereco(_ nodeID: ULID, in snapshot: DocumentSnapshot) -> String {
+        guard let node = snapshot.nodes.first(where: { $0.id == nodeID }) else {
+            return nodeID.string
+        }
+        if case .terminal(let terminal) = node { return terminal.nome }
+        return node.tipo.rawValue
+    }
+
     private static func printTable(_ report: Report) {
         if report.nos.isEmpty {
             print("nenhum nó terminal no workspace \(report.workspaceID.string)")
@@ -216,7 +251,7 @@ enum StatusCommand {
             var linhas: [[String]] = [header]
             for row in report.nos {
                 linhas.append([
-                    row.nome,
+                    row.voce ? "\(row.nome) (você)" : row.nome,
                     row.papel ?? "—",
                     row.adapter,
                     row.estado ?? "sem sessão",
@@ -231,6 +266,13 @@ enum StatusCommand {
                     valor + String(repeating: " ", count: max(0, larguras[indice] - valor.count))
                 }
                 print(celulas.joined(separator: "  ").trimmingCharacters(in: .whitespaces))
+            }
+        }
+        if !report.conexoes.isEmpty {
+            print("conexões:")
+            for conexao in report.conexoes {
+                let seta = conexao.semantica == ConnectionSemantica.conversa.rawValue ? "⇄" : "→"
+                print("  \(conexao.de) \(seta) \(conexao.para)  (\(conexao.semantica))")
             }
         }
         if report.notas > 0 || report.desenhos > 0 || report.portais > 0 {
