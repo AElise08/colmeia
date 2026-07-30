@@ -295,6 +295,87 @@ html[lang="en"] .lang-only.en { display: inline; }
   .oss-box { padding: 28px 20px; }
   section { padding: 60px 16px; }
 }
+
+/* ---- Product canvas preview ---- */
+.canvas-preview {
+  position: relative;
+  width: min(920px, 94vw);
+  height: 360px;
+  margin: 72px auto 0;
+  overflow: hidden;
+  border: 1px solid #4a3816;
+  border-radius: 18px;
+  background:
+    linear-gradient(rgba(247,185,40,.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(247,185,40,.055) 1px, transparent 1px),
+    #171208;
+  background-size: 32px 32px;
+  box-shadow: 0 24px 70px rgba(0,0,0,.4), inset 0 0 80px rgba(247,185,40,.05);
+  text-align: left;
+}
+.canvas-toolbar {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 14px;
+  background: rgba(15,13,8,.86);
+  border-bottom: 1px solid #352810;
+}
+.canvas-toolbar i { width: 8px; height: 8px; border-radius: 50%; background: #73541b; }
+.canvas-toolbar i:first-child { background: #d97838; }
+.canvas-toolbar i:nth-child(2) { background: #d9aa38; }
+.canvas-toolbar i:nth-child(3) { background: #73904a; }
+.canvas-toolbar span { margin-left: 8px; color: #75643e; font: 11px 'SF Mono', monospace; }
+.canvas-node {
+  position: absolute;
+  z-index: 2;
+  min-width: 154px;
+  padding: 12px 14px;
+  border: 1px solid #574117;
+  border-radius: 10px;
+  background: rgba(28,22,12,.93);
+  box-shadow: 0 12px 28px rgba(0,0,0,.28);
+}
+.canvas-node .node-title { display: flex; align-items: center; gap: 7px; color: #f4dfad; font-size: 12px; font-weight: 700; }
+.canvas-node .node-dot { width: 7px; height: 7px; border-radius: 50%; background: #e9ad29; box-shadow: 0 0 10px #e9ad29; }
+.canvas-node small { display: block; margin-top: 7px; color: #8d7a50; font: 10px 'SF Mono', monospace; }
+.canvas-node code { color: #d8b969; font: 10px 'SF Mono', monospace; }
+.node-alpha { top: 82px; left: 9%; }
+.node-beta { bottom: 45px; left: 28%; }
+.node-portal { top: 78px; right: 10%; min-width: 188px; }
+.node-note { bottom: 39px; right: 25%; }
+.canvas-line { position: absolute; z-index: 1; height: 1px; transform-origin: left center; background: linear-gradient(90deg, #805d1a, #e6ae32); opacity: .72; }
+.line-one { width: 240px; top: 151px; left: 25%; transform: rotate(20deg); }
+.line-two { width: 230px; top: 157px; left: 54%; transform: rotate(-21deg); }
+.line-three { width: 160px; top: 247px; left: 43%; transform: rotate(-5deg); }
+.canvas-caption { position: absolute; bottom: 14px; left: 16px; color: #695832; font: 10px 'SF Mono', monospace; }
+.mini-preview { height: 128px; margin: -28px -28px 22px; overflow: hidden; position: relative; background: #171208; border-bottom: 1px solid var(--border); }
+.mini-preview.grid { background-image: linear-gradient(rgba(247,185,40,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(247,185,40,.08) 1px, transparent 1px); background-size: 18px 18px; }
+.mini-terminal { position: absolute; top: 22px; left: 20px; width: 145px; padding: 10px; border: 1px solid #73541b; border-radius: 6px; background: #21190b; color: #dcb663; font: 9px 'SF Mono', monospace; line-height: 1.7; }
+.mini-terminal b { color: #f7b928; }
+.mini-portal { position: absolute; top: 17px; right: 20px; width: 145px; height: 92px; border: 1px solid #73541b; border-radius: 6px; background: #261f15; }
+.mini-portal:before { content: '●  ●  ●'; display: block; padding: 5px 7px; color: #896b2c; font-size: 8px; border-bottom: 1px solid #584318; }
+.mini-portal:after { content: 'portal'; position: absolute; top: 45px; left: 51px; color: #c9a75c; font: 10px 'SF Mono', monospace; }
+.mini-note { position: absolute; bottom: 13px; left: 45%; width: 78px; height: 40px; padding: 7px; border-radius: 4px; background: #b18124; color: #261a08; font-size: 9px; transform: rotate(-4deg); }
+.flow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 48px; }
+.flow-step { position: relative; padding: 24px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg2); text-align: left; }
+.flow-step:not(:last-child):after { content: '→'; position: absolute; right: -19px; top: 31px; z-index: 2; color: var(--gold); font-size: 22px; }
+.flow-number { color: var(--gold); font: 12px 'SF Mono', monospace; }
+.flow-step h3 { margin: 10px 0 6px; font-size: 17px; }
+.flow-step p { color: var(--text-secondary); font-size: 13px; }
+@media (max-width: 680px) {
+  .canvas-preview { height: 300px; transform: scale(.96); margin-top: 42px; }
+  .node-alpha { left: 4%; }
+  .node-beta { left: 7%; bottom: 34px; }
+  .node-portal { right: 4%; top: 70px; }
+  .node-note { right: 7%; bottom: 30px; }
+  .line-one { width: 105px; left: 29%; }
+  .line-two { width: 100px; left: 59%; }
+  .line-three { display: none; }
+  .flow { grid-template-columns: 1fr; }
+  .flow-step:not(:last-child):after { content: '↓'; right: auto; left: 28px; top: auto; bottom: -24px; }
+}
 </style>
 </head>
 <body>
@@ -351,6 +432,15 @@ html[lang="en"] .lang-only.en { display: inline; }
         <span class="en">Learn more</span>
       </a>
     </div>
+    <div class="canvas-preview" aria-label="Preview visual do canvas Colmeia">
+      <div class="canvas-toolbar"><i></i><i></i><i></i><span>colmeia / workspace-local</span></div>
+      <div class="canvas-line line-one"></div><div class="canvas-line line-two"></div><div class="canvas-line line-three"></div>
+      <div class="canvas-node node-alpha"><div class="node-title"><span class="node-dot"></span>Rainha</div><small>coordenando agentes</small><code>colmeia ask Beta ...</code></div>
+      <div class="canvas-node node-beta"><div class="node-title"><span class="node-dot"></span>Agente / review</div><small>terminal ativo</small><code>✓ 12 arquivos revisados</code></div>
+      <div class="canvas-node node-portal"><div class="node-title"><span class="node-dot"></span>Portal / browser</div><small>example.com</small><code>click · fill · snapshot</code></div>
+      <div class="canvas-node node-note"><div class="node-title">📝 Decisões</div><small>nota conectada</small><code>[x] contrato v2</code></div>
+      <div class="canvas-caption">● 4 nodes · 2 conexões · local-first</div>
+    </div>
   </div>
 </section>
 
@@ -371,35 +461,46 @@ html[lang="en"] .lang-only.en { display: inline; }
     </p>
     <div class="features">
       <div class="feature-card">
+        <div class="mini-preview grid"><div class="mini-terminal"><b>$</b> colmeia status<br><b>●</b> 4 agents online<br><b>↳</b> workspace ready</div><div class="mini-note">decisões<br>e contexto</div></div>
         <div class="feature-icon">🖥️</div>
         <h3><span class="pt active">Canvas nativo macOS</span><span class="en">Native macOS canvas</span></h3>
         <p><span class="pt active">App SwiftUI com engine local em Swift. Acelerado por Metal, fluido em qualquer zoom.</span><span class="en">SwiftUI app with a local Swift engine. Metal-accelerated, smooth at any zoom.</span></p>
       </div>
       <div class="feature-card">
+        <div class="mini-preview grid"><div class="mini-terminal"><b>rainha →</b> delegando<br>worker-01<br><b>← reply</b> entregue</div><div class="mini-note">fluxo vivo</div></div>
         <div class="feature-icon">🔗</div>
         <h3><span class="pt active">Agentes que conversam</span><span class="en">Agents that talk</span></h3>
         <p><span class="pt active">Conecte terminais e deixe agentes se comunicarem. Um pergunta, outro responde — sem você precisar copiar e colar.</span><span class="en">Connect terminals and let agents talk. One asks, another answers — no copy-paste needed.</span></p>
       </div>
       <div class="feature-card">
+        <div class="mini-preview"><div class="mini-portal"></div></div>
         <div class="feature-icon">🌐</div>
         <h3><span class="pt active">Portais automatizáveis</span><span class="en">Automated portals</span></h3>
         <p><span class="pt active">Navegador embutido no canvas. Agentes podem navegar, clicar, preencher, avaliar JS, tirar screenshot e gerar PDF.</span><span class="en">Built-in browser on the canvas. Agents can navigate, click, fill, run JS, screenshot, and generate PDF.</span></p>
       </div>
       <div class="feature-card">
+        <div class="mini-preview grid"><div class="mini-note">[x] pesquisa<br>[ ] revisão<br>[ ] entrega</div></div>
         <div class="feature-icon">📝</div>
         <h3><span class="pt active">Notas conectadas</span><span class="en">Connected notes</span></h3>
         <p><span class="pt active">Notas Markdown com checklist e imagens. Conecte um agente a uma nota e ele escreve nela automaticamente.</span><span class="en">Markdown notes with checklists and images. Connect an agent to a note and it writes to it automatically.</span></p>
       </div>
       <div class="feature-card">
+        <div class="mini-preview grid"><div class="mini-terminal" style="left:50px;top:25px"><b>queen mode</b><br>connect · spawn<br>observe · decide</div></div>
         <div class="feature-icon">👑</div>
         <h3><span class="pt active">Papel Rainha</span><span class="en">Queen role</span></h3>
         <p><span class="pt active">Um agente coordenador que gerencia conexões, cria terminais e mantém a visão geral do workspace.</span><span class="en">A coordinating agent that manages connections, creates terminals, and keeps the big picture.</span></p>
       </div>
       <div class="feature-card">
+        <div class="mini-preview grid"><div class="mini-terminal" style="left:35px;top:28px"><b>room://team</b><br>presence: 4<br>shared context</div></div>
         <div class="feature-icon">🤝</div>
         <h3><span class="pt active">Colaboração remota</span><span class="en">Remote collaboration</span></h3>
         <p><span class="pt active">Hub opcional para salas, convites e presença. Compartilhe contexto sem expor terminais ou arquivos locais.</span><span class="en">Optional Hub for rooms, invites, and presence. Share context without exposing terminals or local files.</span></p>
       </div>
+    </div>
+    <div class="flow">
+      <div class="flow-step"><span class="flow-number">01 / SEE</span><h3><span class="pt active">Visualize</span><span class="en">Visualize</span></h3><p><span class="pt active">Coloque cada agente no espaço onde ele faz sentido.</span><span class="en">Place every agent in the space where it makes sense.</span></p></div>
+      <div class="flow-step"><span class="flow-number">02 / CONNECT</span><h3><span class="pt active">Conecte</span><span class="en">Connect</span></h3><p><span class="pt active">Ligue terminais, notas e portais para criar contexto.</span><span class="en">Link terminals, notes, and portals to create context.</span></p></div>
+      <div class="flow-step"><span class="flow-number">03 / SHIP</span><h3><span class="pt active">Entregue</span><span class="en">Ship</span></h3><p><span class="pt active">Acompanhe decisões e entregas sem perder o fio.</span><span class="en">Track decisions and deliveries without losing the thread.</span></p></div>
     </div>
   </div>
 </section>
