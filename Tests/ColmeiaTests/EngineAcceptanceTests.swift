@@ -195,6 +195,40 @@ struct EngineAcceptanceTests {
         })
     }
 
+    @Test func agenteQueCriaSubagenteRecebeConexaoImediata() async throws {
+        let (engine, client, root) = try bootAcceptanceEngine()
+        defer { client.close(); engine.stop(); try? FileManager.default.removeItem(at: root) }
+        _ = try await client.hello(client: "acceptance-human")
+        let workspace = try await client.call(
+            .workspaceCreate, params: WorkspaceCreateParams(nome: "subagent", caminhoRaiz: root.path),
+            expecting: WorkspaceResult.self).workspace
+        let principal = acceptanceNode(nome: "Codex", cwd: root.path)
+        try await addAcceptanceNodes([principal], workspaceID: workspace.id, client: client)
+        client.close()
+
+        let agent = SocketClient()
+        try agent.connect(to: ColmeiaPaths(root: root).engineSocket.path)
+        defer { agent.close() }
+        _ = try await agent.hello(
+            client: "acceptance-agent", author: .agente(principal.id.string))
+        let subagent = acceptanceNode(nome: "OpenCode", cwd: root.path)
+        let op = DocOp(
+            opID: ULID.generate(), author: .agente(principal.id.string), ts: Date(),
+            payload: .nodeAdd(NodeAddOpPayload(node: .terminal(subagent))))
+        _ = try await agent.call(
+            .docApply,
+            params: DocApplyParams(workspaceID: workspace.id, ops: [op]),
+            expecting: DocApplyResult.self)
+
+        let snapshot = try await agent.call(
+            .docSnapshot,
+            params: DocSnapshotParams(workspaceID: workspace.id),
+            expecting: DocSnapshotResult.self).documentSnapshot
+        #expect(snapshot.connections.contains {
+            $0.semantica == .conversa && $0.de == principal.id && $0.para == subagent.id
+        })
+    }
+
     @Test func noteAppendCriaNotaConexaoArquivoEEventoDeJournal() async throws {
         let (engine, client, root) = try bootAcceptanceEngine()
         defer { client.close(); engine.stop(); try? FileManager.default.removeItem(at: root) }

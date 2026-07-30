@@ -563,6 +563,18 @@ public final class Engine: @unchecked Sendable {
                         break
                     }
                 }
+                // An agent-created terminal is part of that agent's working
+                // graph immediately, not only after the first message.
+                if case .agente(let sourceString) = client.author,
+                   let sourceID = ULID(sourceString) {
+                    for applied in appliedOps {
+                        guard case .nodeAdd(let payload) = applied.payload,
+                              case .terminal(let terminal) = payload.node,
+                              terminal.id != sourceID else { continue }
+                        ensureConversaConnection(
+                            ws: params.workspaceID, entre: sourceID, e: terminal.id)
+                    }
+                }
                 try? state.saveWorkspace()
                 respondEncodable(client, id: request.id, DocApplyResult(seqFinal: seqFinal))
             case .docSnapshot:
