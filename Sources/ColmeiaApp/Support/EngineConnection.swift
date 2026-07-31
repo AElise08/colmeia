@@ -135,10 +135,18 @@ final class EngineConnection: ObservableObject {
                 // app aciona o banner de reciclagem (§3.3) na UI. Não bloqueia.
                 engineVersion = hello.engineVersion
                 status = .conectado
-                await onConnected?()
-                for await event in candidate.events {
-                    route(event)
+
+                // O stream precisa ser drenado enquanto o resync faz requests de
+                // reattach. Se esperarmos o `onConnected` terminar, um replay de
+                // journal grande enche o buffer de escrita do Engine antes de a UI
+                // começar a consumir os eventos, disparando `client_backpressure`.
+                let eventTask = Task { [weak self] in
+                    for await event in candidate.events {
+                        self?.route(event)
+                    }
                 }
+                await onConnected?()
+                await eventTask.value
             } catch {
                 candidate.close()
             }
