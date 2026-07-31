@@ -16,15 +16,6 @@
 > Status: alpha. Colmeia is usable for local experimentation, but its protocol,
 > storage layout, and collaboration UX may still change.
 
-## Demo
-
-[![Animated preview of the Colmeia app](docs/media/democolmeia.gif)](docs/media/democolmeia.mov)
-
-Click the preview to open the full demo video.
-
-The demo shows the visual canvas, agent workspace, shared access flow, and the
-conversation view for coordinating work without losing the project context.
-
 ---
 
 <a id="portugues"></a>
@@ -218,9 +209,8 @@ swift build
 open dist/Colmeia.app
 ```
 
-Use `colmeia --help` for the complete CLI reference. Read the [demo video](docs/media/democolmeia.mov)
-for the product flow and [`docs/SPEC.md`](docs/SPEC.md) for the protocol and
-security model.
+Use `colmeia --help` for the complete CLI reference. Read [`docs/SPEC.md`](docs/SPEC.md)
+for the protocol and security model.
 
 ### Agent workflow
 
