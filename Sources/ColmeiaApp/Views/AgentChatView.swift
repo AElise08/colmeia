@@ -70,7 +70,6 @@ struct AgentChatView: View {
     @State private var draft = ""
     @State private var attachments: [URL] = []
     @State private var isDroppingAttachment = false
-    @State private var sentMessages: [AgentChatEntry] = []
     @State private var showModelSheet = false
     @State private var requestedModel = ""
     @FocusState private var composerFocused: Bool
@@ -252,9 +251,6 @@ struct AgentChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     introCard
-                    ForEach(sentMessages) { message in
-                        HumanMessageBubble(message: message)
-                    }
                     agentMessages
                     inlineApprovals
                     if let selectedAgent {
@@ -372,7 +368,11 @@ struct AgentChatView: View {
             return message.de == selectedAgentID || message.para == selectedAgentID
         }.suffix(20)
         ForEach(Array(messages), id: \.id) { message in
-            AgentMessageCard(message: message, name: store.nodeName(message.de), recipient: store.nodeName(message.para))
+            if message.isHuman {
+                PersistedHumanMessageBubble(message: message, recipient: store.nodeName(message.para))
+            } else {
+                AgentMessageCard(message: message, name: store.nodeName(message.de), recipient: store.nodeName(message.para))
+            }
         }
     }
 
@@ -490,6 +490,14 @@ struct AgentChatView: View {
             var failures: [String] = []
             for target in targets {
                 do {
+                    // Registra a intenção antes do envio ao PTY. Assim um crash
+                    // entre o append e o comando não apaga a conversa; se o
+                    // adapter falhar, a mensagem continua como evidência da
+                    // tentativa e o aviso de entrega aparece abaixo.
+                    try await store.appendHumanChatMessage(
+                        toNodeID: target.id,
+                        text: text,
+                        attachments: pendingAttachments)
                     try await target.controller.ensureAndSendCommand(
                         workspaceID: workspaceID,
                         floorID: store.activeFloor?.id,
@@ -501,11 +509,6 @@ struct AgentChatView: View {
             }
             if !delivered.isEmpty {
                 await MainActor.run {
-                    sentMessages.append(AgentChatEntry(
-                        text: text,
-                        recipient: delivered.joined(separator: ", "),
-                        attachments: pendingAttachments))
-                    if sentMessages.count > 50 { sentMessages.removeFirst(sentMessages.count - 50) }
                     draft = ""
                     attachments = []
                 }
@@ -648,13 +651,6 @@ private struct AgentChatAgent: Identifiable {
     }
 }
 
-private struct AgentChatEntry: Identifiable {
-    let id = UUID()
-    let text: String
-    let recipient: String
-    let attachments: [URL]
-}
-
 private struct AgentListRow: View {
     let agent: AgentChatAgent
     let selected: Bool
@@ -707,15 +703,16 @@ private struct AgentListRow: View {
     }
 }
 
-private struct HumanMessageBubble: View {
-    let message: AgentChatEntry
+private struct PersistedHumanMessageBubble: View {
+    let message: AgentMessageSummary
+    let recipient: String
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            Text("You → \(message.recipient)")
+            Text("You → \(recipient)")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(message.text)
+            Text(message.texto)
                 .font(.callout)
                 .textSelection(.enabled)
                 .padding(.horizontal, 13)
@@ -724,12 +721,15 @@ private struct HumanMessageBubble: View {
             if !message.attachments.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "photo.on.rectangle.angled")
-                    Text(message.attachments.map(\.lastPathComponent).joined(separator: ", "))
+                    Text(message.attachments.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", "))
                         .lineLimit(1)
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             }
+            Text(message.deliveredAt.formatted(date: .omitted, time: .shortened))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }

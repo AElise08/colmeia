@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var showNowPanel = false
     @State private var showFilesPanel = false
     @State private var showPromptComposer = false
+    @State private var showWorkspaceSearch = false
     @State private var surface: ColmeiaSurface = .canvas
 
     var body: some View {
@@ -110,6 +111,9 @@ struct ContentView: View {
         .sheet(isPresented: $showPromptComposer) {
             PromptComposerView(initialRecipient: selectedTerminalID)
         }
+        .sheet(isPresented: $showWorkspaceSearch) {
+            WorkspaceSearchPanel()
+        }
         .sheet(isPresented: $showDeliveriesPanel) {
             DeliveriesPanel(
                 deliveries: store.deliveries,
@@ -154,26 +158,40 @@ struct ContentView: View {
         }
     }
 
-    /// §3.2 / Marco A — primeiro convite é criar Missão, não abrir terminal.
+    /// Base Workspace: a primeira ação é abrir/criar um workspace local. Sala,
+    /// Missão e Hub são extensões opcionais e não podem bloquear o canvas.
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "hexagon")
                 .font(.system(size: 42))
                 .foregroundStyle(.secondary)
             if connection.isConnected {
-                Text("Criar uma Missão")
+                Text("Comece um workspace")
                     .font(.title3)
-                Text("O canvas organiza resultado, responsáveis e entregas — o terminal vem depois.")
+                Text("Abra uma pasta existente ou crie um workspace local. Você pode adicionar terminais, notas e portais quando quiser.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 360)
-                Button {
-                    showRoomsPanel = true
-                } label: {
-                    Label("Abrir salas e missões", systemImage: "flag.fill")
+                HStack(spacing: 10) {
+                    Button(action: chooseWorkspaceFolder) {
+                        Label("Abrir pasta…", systemImage: "folder")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button {
+                        openWorkspaceCreator()
+                    } label: {
+                        Label("Novo workspace…", systemImage: "plus.square")
+                    }
+                    .buttonStyle(.bordered)
+                    Button(action: importWorkspace) {
+                        Label("Importar workspace…", systemImage: "square.and.arrow.down")
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.borderedProminent)
+                Text("Salas e missões podem ser ativadas depois, sem mudar o workspace base.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
                 WorkspaceSelectorMenu()
             } else {
                 ProgressView()
@@ -183,6 +201,20 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func chooseWorkspaceFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let name = url.lastPathComponent.isEmpty ? "Workspace" : url.lastPathComponent
+        Task { await store.createWorkspace(nome: name, caminhoRaiz: url.path) }
+    }
+
+    private func openWorkspaceCreator() {
+        NotificationCenter.default.post(name: .colmeiaCreateWorkspace, object: nil)
     }
 
     private var overlayIndicators: some View {
@@ -250,6 +282,18 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("Open the live activity panel (⌘⌥I)")
+
+            if let health = store.workspaceHealth, health.state != .open {
+                Button {
+                    exportDiagnostics()
+                } label: {
+                    Label("Recuperação disponível", systemImage: "exclamationmark.triangle.fill")
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .help(health.message ?? "Este workspace abriu em modo recuperável.")
+            }
 
             Spacer()
 
@@ -403,6 +447,27 @@ struct ContentView: View {
                 } label: {
                     Label("Arquivos", systemImage: "folder")
                 }
+                Button {
+                    exportWorkspace()
+                } label: {
+                    Label("Exportar workspace…", systemImage: "square.and.arrow.up")
+                }
+                Button {
+                    exportDiagnostics()
+                } label: {
+                    Label("Exportar diagnóstico…", systemImage: "stethoscope")
+                }
+                Button {
+                    importWorkspace()
+                } label: {
+                    Label("Importar workspace…", systemImage: "square.and.arrow.down")
+                }
+                Button {
+                    Task { await store.closeWorkspace() }
+                } label: {
+                    Label("Fechar workspace", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+                .disabled(store.workspace == nil)
                 Divider()
                 Button {
                     showMemoryPanel = true
@@ -428,15 +493,47 @@ struct ContentView: View {
             } label: {
                 Label("Operação", systemImage: "slider.horizontal.3")
             }
-            .disabled(store.workspace == nil)
-
             EditorPreferenceMenu()
             Button {
                 showRoomsPanel = true
             } label: {
                 Label("Salas", systemImage: "person.3.fill")
             }
+
+            Button {
+                showWorkspaceSearch = true
+            } label: {
+                Label("Buscar", systemImage: "magnifyingglass")
+            }
+            .keyboardShortcut("k", modifiers: [.command])
+            .disabled(store.workspace == nil)
         }
+    }
+
+    private func exportWorkspace() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "workspace.colmeia.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await store.exportWorkspace(to: url) }
+    }
+
+    private func importWorkspace() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await store.importWorkspace(from: url) }
+    }
+
+    private func exportDiagnostics() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "colmeia-diagnostic.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await store.exportDiagnostics(to: url) }
     }
 
     private var operationAlerts: [WorkerOperationAlert] {

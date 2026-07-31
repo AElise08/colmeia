@@ -95,8 +95,8 @@ struct ProtocolTests {
     }
 
     @Test func inventarioDeMetodos() {
-        // 88 base multiplayer + 20 mission model (mission/workstream/decision/relation)
-        #expect(ColmeiaMethod.allCases.count == 127)
+        // 88 base multiplayer + 20 mission model + 2 persistent chat methods + health
+        #expect(ColmeiaMethod.allCases.count == 130)
         #expect(ColmeiaMethod(rawValue: "routine.run_now") == .routineRunNow)
         #expect(ColmeiaMethod(rawValue: "doc.apply") == .docApply)
         #expect(ColmeiaMethod(rawValue: "portal.open") == .portalOpen)

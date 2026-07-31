@@ -9,6 +9,7 @@ extension Notification.Name {
     static let colmeiaShowAgentChat = Notification.Name("com.mel.colmeia.showAgentChat")
     static let colmeiaShowNow = Notification.Name("com.mel.colmeia.showNow")
     static let colmeiaShowAttention = Notification.Name("com.mel.colmeia.showAttention")
+    static let colmeiaCreateWorkspace = Notification.Name("com.mel.colmeia.createWorkspace")
 }
 
 @MainActor

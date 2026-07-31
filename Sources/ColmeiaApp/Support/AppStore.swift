@@ -20,6 +20,15 @@ struct AgentMessageSummary: Identifiable, Equatable {
     let para: ULID
     let texto: String
     let deliveredAt: Date
+    let isHuman: Bool
+    let attachments: [String]
+}
+
+struct WorkspaceHistorySearchResult: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let detail: String
+    let symbol: String
 }
 
 /// Estado espelhado do engine + intenções da usuária. Toda mutação do documento sai
@@ -47,6 +56,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var watchdogAlerts: [WatchdogAlertTopicPayload] = []
     @Published private(set) var workerArchives: [WorkerArchiveTombstone] = []
     @Published private(set) var agentMessages: [AgentMessageSummary] = []
+    @Published private(set) var workspaceHealth: WorkspaceHealth?
     @Published var viewport = Viewport()
     @Published var selection: ULID?
     @Published var connectionSelection: ULID?
@@ -239,8 +249,96 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Exporta somente a projeção portátil do canvas. Journals, sessões vivas,
+    /// cookies, tokens e paths locais ficam fora do arquivo por construção.
+    func exportWorkspace(to url: URL) async {
+        guard let ws = workspace else { return }
+        do {
+            let result = try await connection.call(
+                .docSnapshot,
+                params: DocSnapshotParams(workspaceID: ws.id),
+                expecting: DocSnapshotResult.self)
+            try WorkspaceArchive(workspace: ws, snapshot: result.documentSnapshot).write(to: url)
+            avisoInfo = "Workspace exportado para \(url.lastPathComponent)."
+        } catch {
+            report(error, "workspace.export")
+        }
+    }
+
+    func exportDiagnostics(to url: URL) async {
+        guard let ws = workspace else { return }
+        do {
+            let snapshot = try await connection.call(
+                .docSnapshot,
+                params: DocSnapshotParams(workspaceID: ws.id),
+                expecting: DocSnapshotResult.self).documentSnapshot
+            let history = try await connection.call(
+                .docHistory,
+                params: DocHistoryParams(workspaceID: ws.id, desdeSeq: 1),
+                expecting: DocHistoryResult.self).ops
+            let sessions = try await connection.call(
+                .sessionList,
+                params: SessionListParams(workspaceID: ws.id),
+                expecting: SessionListResult.self).map(DiagnosticSession.init)
+            let health = workspaceHealth ?? WorkspaceHealth(
+                workspaceID: ws.id, state: .open, snapshotAvailable: true,
+                journalAvailable: true, quarantineAvailable: false)
+            try WorkspaceDiagnostic(
+                workspace: ws, health: health, snapshot: snapshot,
+                operations: history, sessions: sessions).write(to: url)
+            avisoInfo = "Diagnóstico exportado para \(url.lastPathComponent)."
+        } catch {
+            report(error, "workspace.diagnostics.export")
+        }
+    }
+
+    /// Importa um arquivo portátil como um novo workspace. IDs de nós são
+    /// preservados para manter conexões, enquanto o workspace recebe nova
+    /// identidade; conteúdo de notas volta pelos endpoints controlados do Engine.
+    func importWorkspace(from url: URL, caminhoRaiz: String? = nil) async {
+        do {
+            let archive = try WorkspaceArchive.read(from: url)
+            let importedID = ULID.generate()
+            let imported = archive.reidentified(
+                workspaceID: importedID,
+                name: archive.workspace.nome,
+                rootPath: caminhoRaiz)
+            let result = try await connection.call(
+                .workspaceCreate,
+                params: WorkspaceCreateParams(
+                    nome: imported.workspace.nome,
+                    caminhoRaiz: imported.workspace.caminhoRaiz,
+                    id: importedID),
+                expecting: WorkspaceResult.self)
+            await refreshWorkspaces()
+            await open(workspaceID: result.workspace.id)
+            var payloads = imported.snapshot.nodes.map { OpPayload.nodeAdd(NodeAddOpPayload(node: $0)) }
+            payloads.append(contentsOf: imported.snapshot.connections.map { .connectionAdd(ConnectionAddOpPayload(connection: $0)) })
+            try await performManyAguardando(payloads)
+            for (nodeIDString, content) in imported.snapshot.noteContents ?? [:]
+                where ULID(nodeIDString) != nil {
+                guard let nodeID = ULID(nodeIDString) else { continue }
+                _ = try await connection.call(
+                    .noteReplace,
+                    params: NoteReplaceParams(workspaceID: importedID, nodeID: nodeID, conteudo: content))
+            }
+            avisoInfo = "Workspace importado de \(url.lastPathComponent)."
+        } catch {
+            report(error, "workspace.import")
+        }
+    }
+
     func open(workspaceID: ULID, restoreViewport: Bool = true) async {
         do {
+            // Fechar explicitamente o workspace anterior materializa o snapshot
+            // antes da troca e deixa as sessões vivas para o próximo reattach.
+            // Isso evita que duas abas lógicas disputem o mesmo espelho local.
+            if let previous = workspace, previous.id != workspaceID {
+                _ = try? await connection.call(
+                    .workspaceClose,
+                    params: WorkspaceCloseParams(id: previous.id),
+                    expecting: EmptyResult.self)
+            }
             let result = try await connection.call(
                 .workspaceOpen,
                 params: WorkspaceOpenParams(id: workspaceID),
@@ -275,9 +373,11 @@ final class AppStore: ObservableObject {
             watchdogAlerts = []
             workerArchives = []
             agentMessages = []
+            workspaceHealth = nil
             delegations = []
 
             workspace = result.workspace
+            workspaceHealth = result.health
             if restoreViewport {
                 viewport = result.workspace.viewport
             }
@@ -295,8 +395,31 @@ final class AppStore: ObservableObject {
             await refreshRoutines()
             await refreshFloors()
             await refreshOperationalState()
+            await refreshAgentMessages()
         } catch {
             report(error, "workspace.open")
+        }
+    }
+
+    /// Fecha o workspace visual sem encerrar sessões vivas (§6.4). A próxima
+    /// abertura reconecta as sessões persistidas pelo Engine.
+    func closeWorkspace() async {
+        guard let current = workspace else { return }
+        do {
+            _ = try await connection.call(
+                .workspaceClose,
+                params: WorkspaceCloseParams(id: current.id),
+                expecting: EmptyResult.self)
+            for controller in terminalControllers.values { controller.detach() }
+            terminalControllers.removeAll()
+            workspace = nil
+            workspaceHealth = nil
+            nodes.removeAll()
+            connections.removeAll()
+            selection = nil
+            avisoInfo = "Workspace fechado; sessões permanecem disponíveis para retomar."
+        } catch {
+            report(error, "workspace.close")
         }
     }
 
@@ -386,6 +509,83 @@ final class AppStore: ObservableObject {
         await refreshWorkerArchives()
         await refreshDecisions()
         await refreshRoomSync()
+    }
+
+    func refreshAgentMessages() async {
+        guard let ws = workspace else { return }
+        do {
+            let messages = try await connection.call(
+                .chatMessageList,
+                params: ChatMessageListParams(workspaceID: ws.id, limit: 200),
+                expecting: ChatMessageListResult.self)
+            agentMessages = messages.map(agentMessageSummary)
+        } catch {
+            report(error, "chat.history")
+        }
+    }
+
+    func refreshWorkspaceHealth() async {
+        guard let ws = workspace else { return }
+        workspaceHealth = try? await connection.call(
+            .workspaceHealth,
+            params: WorkspaceHealthParams(workspaceID: ws.id),
+            expecting: WorkspaceHealthResult.self)
+    }
+
+    /// Busca no histórico estruturado sem expor payloads de operações ou
+    /// output ANSI à UI de busca. Conteúdo de arquivos/notas é indexado pela
+    /// própria árvore do workspace.
+    func searchWorkspaceHistory(_ query: String) async -> [WorkspaceHistorySearchResult] {
+        guard let ws = workspace else { return [] }
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !term.isEmpty else { return [] }
+        var output: [WorkspaceHistorySearchResult] = []
+        if let operations = try? await connection.call(
+            .docHistory,
+            params: DocHistoryParams(workspaceID: ws.id, desdeSeq: 1),
+            expecting: DocHistoryResult.self).ops {
+            output.append(contentsOf: operations.compactMap { op in
+                let type = op.tipo.rawValue
+                let author = String(describing: op.author).lowercased()
+                guard type.lowercased().contains(term) || author.contains(term) else { return nil }
+                return WorkspaceHistorySearchResult(
+                    id: "op-\(op.opID.string)",
+                    title: type,
+                    detail: "seq \(op.seq.map(String.init) ?? "—") · \(op.author)",
+                    symbol: "arrow.triangle.branch")
+            })
+        }
+        if let messages = try? await connection.call(
+            .chatMessageList,
+            params: ChatMessageListParams(workspaceID: ws.id, limit: 2_000),
+            expecting: ChatMessageListResult.self) {
+            output.append(contentsOf: messages.compactMap { message in
+                guard message.text.lowercased().contains(term) else { return nil }
+                return WorkspaceHistorySearchResult(
+                    id: "chat-\(message.id.string)",
+                    title: "Chat · \(nodeName(message.toNodeID))",
+                    detail: message.text,
+                    symbol: "bubble.left.and.bubble.right")
+            })
+        }
+        return Array(output.prefix(100))
+    }
+
+    func appendHumanChatMessage(
+        toNodeID: ULID,
+        text: String,
+        attachments: [URL] = []
+    ) async throws {
+        guard let ws = workspace else { return }
+        let result = try await connection.call(
+            .chatMessageAppend,
+            params: ChatMessageAppendParams(
+                workspaceID: ws.id,
+                toNodeID: toNodeID,
+                text: text,
+                attachments: attachments.map(\.path)),
+            expecting: ChatMessageResult.self)
+        upsert(agentMessage: agentMessageSummary(result.message))
     }
 
     /// §7.1 — Decisões abertas nas salas do engine local.
@@ -1826,15 +2026,14 @@ final class AppStore: ObservableObject {
             upsert(workerArchive: payload.tombstone)
         case .messageDelivered:
             guard let payload = try? event.decodeParams(MessageDeliveredTopicPayload.self) else { return }
-            if !agentMessages.contains(where: { $0.id == payload.messageID }) {
-                agentMessages.append(AgentMessageSummary(
-                    id: payload.messageID,
-                    de: payload.de,
-                    para: payload.para,
-                    texto: payload.texto,
-                    deliveredAt: Date()))
-                if agentMessages.count > 100 { agentMessages.removeFirst(agentMessages.count - 100) }
-            }
+            upsert(agentMessage: AgentMessageSummary(
+                id: payload.messageID,
+                de: payload.de,
+                para: payload.para,
+                texto: payload.texto,
+                deliveredAt: Date(),
+                isHuman: false,
+                attachments: []))
         case .engineWarning:
             if let payload = try? event.decodeParams(EngineWarningTopicPayload.self) {
                 lastError = "engine: \(payload.name) — \(payload.message)"
@@ -1855,6 +2054,29 @@ final class AppStore: ObservableObject {
              .leaseAcquired, .leaseRevoked, .handoffRequested,
              .handoffAccepted, .conductorChanged:
             break
+        }
+    }
+
+    private func agentMessageSummary(_ message: ChatMessage) -> AgentMessageSummary {
+        AgentMessageSummary(
+            id: message.id,
+            de: message.fromNodeID ?? message.toNodeID,
+            para: message.toNodeID,
+            texto: message.text,
+            deliveredAt: message.createdAt,
+            isHuman: message.fromNodeID == nil,
+            attachments: message.attachments)
+    }
+
+    private func upsert(agentMessage: AgentMessageSummary) {
+        if let index = agentMessages.firstIndex(where: { $0.id == agentMessage.id }) {
+            agentMessages[index] = agentMessage
+        } else {
+            agentMessages.append(agentMessage)
+            agentMessages.sort { lhs, rhs in
+                lhs.deliveredAt == rhs.deliveredAt ? lhs.id < rhs.id : lhs.deliveredAt < rhs.deliveredAt
+            }
+            if agentMessages.count > 200 { agentMessages.removeFirst(agentMessages.count - 200) }
         }
     }
 

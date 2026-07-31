@@ -117,6 +117,11 @@ public struct ColmeiaPaths: Sendable {
         workspaceDir(workspaceID).appendingPathComponent("delegations.json")
     }
 
+    /// Projeção persistente do Agent Chat, separada do output ANSI dos journals.
+    public func chatMessagesFile(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("chat-messages.json")
+    }
+
     public func semanticEventsFile(_ workspaceID: ULID) -> URL {
         workspaceDir(workspaceID).appendingPathComponent("semantic-events.jsonl")
     }

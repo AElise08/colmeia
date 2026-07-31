@@ -6,6 +6,7 @@ public enum ColmeiaMethod: String, Codable, CaseIterable, Sendable {
     case workspaceList = "workspace.list"
     case workspaceCreate = "workspace.create"
     case workspaceOpen = "workspace.open"
+    case workspaceHealth = "workspace.health"
     case workspaceClose = "workspace.close"
     case workspaceDelete = "workspace.delete"
     case workspaceUpdate = "workspace.update"
@@ -27,6 +28,8 @@ public enum ColmeiaMethod: String, Codable, CaseIterable, Sendable {
     case approvalList = "approval.list"
     case approvalResolve = "approval.resolve"
     case messageSend = "message.send"
+    case chatMessageAppend = "chat.message.append"
+    case chatMessageList = "chat.message.list"
     case noteAppend = "note.append"
     /// Capacidades explícitas para agentes manipularem notas sem escrever em arquivos arbitrários.
     case nodeList = "node.list"
@@ -307,17 +310,28 @@ public struct WorkspaceOpenParams: Codable, Equatable, Sendable {
 public struct WorkspaceOpenResult: Codable, Equatable, Sendable {
     public var workspace: Workspace
     public var documentSnapshot: DocumentSnapshot
+    public var health: WorkspaceHealth?
 
     enum CodingKeys: String, CodingKey {
         case workspace
         case documentSnapshot = "document_snapshot"
+        case health
     }
 
-    public init(workspace: Workspace, documentSnapshot: DocumentSnapshot) {
+    public init(workspace: Workspace, documentSnapshot: DocumentSnapshot, health: WorkspaceHealth? = nil) {
         self.workspace = workspace
         self.documentSnapshot = documentSnapshot
+        self.health = health
     }
 }
+
+public struct WorkspaceHealthParams: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    enum CodingKeys: String, CodingKey { case workspaceID = "workspace_id" }
+    public init(workspaceID: ULID) { self.workspaceID = workspaceID }
+}
+
+public typealias WorkspaceHealthResult = WorkspaceHealth
 
 /// Sessões continuam vivas (§6.4).
 public struct WorkspaceCloseParams: Codable, Equatable, Sendable {
@@ -852,6 +866,63 @@ public struct MessageSendResult: Codable, Equatable, Sendable {
         self.messageID = messageID
     }
 }
+
+// MARK: - chat.message.*
+
+public struct ChatMessageAppendParams: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var fromNodeID: ULID?
+    public var toNodeID: ULID
+    public var text: String
+    public var attachments: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case text, attachments
+        case workspaceID = "workspace_id"
+        case fromNodeID = "from_node_id"
+        case toNodeID = "to_node_id"
+    }
+
+    public init(
+        workspaceID: ULID,
+        fromNodeID: ULID? = nil,
+        toNodeID: ULID,
+        text: String,
+        attachments: [String] = []
+    ) {
+        self.workspaceID = workspaceID
+        self.fromNodeID = fromNodeID
+        self.toNodeID = toNodeID
+        self.text = text
+        self.attachments = attachments
+    }
+}
+
+public struct ChatMessageListParams: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var nodeID: ULID?
+    public var limit: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case limit
+        case workspaceID = "workspace_id"
+        case nodeID = "node_id"
+    }
+
+    public init(workspaceID: ULID, nodeID: ULID? = nil, limit: Int? = nil) {
+        self.workspaceID = workspaceID
+        self.nodeID = nodeID
+        self.limit = limit
+    }
+}
+
+public struct ChatMessageResult: Codable, Equatable, Sendable {
+    public var message: ChatMessage
+
+    public init(message: ChatMessage) { self.message = message }
+}
+
+public typealias ChatMessageListResult = [ChatMessage]
 
 // MARK: - note.append (§13.3)
 

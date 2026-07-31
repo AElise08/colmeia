@@ -15,6 +15,10 @@ public final class HubServer: @unchecked Sendable {
     public var hubToken: String?
     /// URL do Engine para proxy — Unix socket (path) ou tcp://host:port.
     public var engineURL: String?
+    /// Limites defensivos por conexão. Podem ser reduzidos por hosts públicos.
+    public var maxRequestsPerSecond = 120
+    public var maxBytesPerSecond = 2 * 1024 * 1024
+    public var maxRequestBytes = 1 * 1024 * 1024
 
     private let host: String
     private let port: UInt16
@@ -416,6 +420,16 @@ public final class HubServer: @unchecked Sendable {
     // MARK: - Dispatch
 
     public func receive(line: Data, from client: HubClient) {
+        guard client.rateLimiter.allow(bytes: line.count) else {
+            log.warn("rate_limited", "cliente (client.clientName) excedeu o limite do Hub")
+            if let envelope = try? SocketFraming.decodeLine(Envelope.self, from: line),
+               case .request(let request) = envelope {
+                client.respond(id: request.id, error: ProtocolError(
+                    name: .invalid_params,
+                    message: "limite de requisições ou tamanho excedido"))
+            }
+            return
+        }
         guard let envelope = try? SocketFraming.decodeLine(Envelope.self, from: line) else {
             log.warn("malformed", "linha inválida")
             return
@@ -1634,6 +1648,7 @@ public final class HubClient {
     private let writeQueue: DispatchQueue
     private let writeLock = NSLock()
     private var writeClosed = false
+    let rateLimiter: HubRateLimiter
 
     var helloDone = false
     var inviteRoomID: ULID?
@@ -1649,6 +1664,10 @@ public final class HubClient {
         self.hub = hub
         self.readQueue = DispatchQueue(label: "colmeia.hub.client.read.\(fd)")
         self.writeQueue = DispatchQueue(label: "colmeia.hub.client.write.\(fd)")
+        self.rateLimiter = HubRateLimiter(
+            maxRequestsPerSecond: hub.maxRequestsPerSecond,
+            maxBytesPerSecond: hub.maxBytesPerSecond,
+            maxRequestBytes: hub.maxRequestBytes)
     }
 
     func startReading() {

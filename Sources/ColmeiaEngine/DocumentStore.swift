@@ -27,6 +27,20 @@ final class WorkspaceState {
     /// Preenchido no load se houve quarentena (§22.3) — vira engine.warning na abertura.
     var corruptionNotice: String?
 
+    func health() -> WorkspaceHealth {
+        let fm = FileManager.default
+        let documentURL = paths.documentFile(workspace.id)
+        let quarantineURL = documentURL.appendingPathExtension("quarantine")
+        let recoverable = corruptionNotice != nil
+        return WorkspaceHealth(
+            workspaceID: workspace.id,
+            state: recoverable ? .recoverable : .open,
+            message: corruptionNotice,
+            snapshotAvailable: fm.fileExists(atPath: paths.documentSnapshotFile(workspace.id).path),
+            journalAvailable: fm.fileExists(atPath: documentURL.path),
+            quarantineAvailable: fm.fileExists(atPath: quarantineURL.path))
+    }
+
     init(paths: ColmeiaPaths, workspace: Workspace, snapshotEveryOps: Int = 500) throws {
         self.paths = paths
         self.workspace = workspace

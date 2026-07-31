@@ -118,7 +118,8 @@ struct NowPanel: View {
                     } else {
                         ForEach(messages.suffix(12).reversed()) { message in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("\(nodeName(message.de)) → \(nodeName(message.para))")
+                                let sender = message.isHuman ? "You" : nodeName(message.de)
+                                Text("\(sender) → \(nodeName(message.para))")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.secondary)
                                 Text(message.texto)

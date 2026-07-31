@@ -56,6 +56,11 @@ struct WorkspaceSelectorMenu: View {
         }
         .accessibilityLabel("Selecionar workspace")
         .onAppear { Task { await refreshAtividade() } }
+        .onReceive(NotificationCenter.default.publisher(for: .colmeiaCreateWorkspace)) { _ in
+            nomeNovo = ""
+            caminhoNovo = ""
+            criando = true
+        }
         .onChange(of: store.workspaces) { _, _ in
             Task { await refreshAtividade() }
         }

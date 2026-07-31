@@ -94,6 +94,7 @@ public final class Engine: @unchecked Sendable {
     var floors: [ULID: Floor] = [:]
     var activeFloor: [ULID: ULID] = [:]
     var deliveryStores: [ULID: DeliveryStore] = [:]
+    var chatMessageStores: [ULID: ChatMessageStore] = [:]
     var watchdogConfigurations: [ULID: WorkerWatchdogConfiguration] = [:]
     var workerArchives: [ULID: WorkerArchiveService] = [:]
     var delegations: [ULID: [ULID: Delegation]] = [:]
@@ -276,6 +277,7 @@ public final class Engine: @unchecked Sendable {
             migrateLegacyMaestroRoles(in: state, workspaceID: wsID)
             workspaces[wsID] = state
             deliveryStores[wsID] = try? DeliveryStore(directory: paths.deliveriesDir(wsID))
+            chatMessageStores[wsID] = try? ChatMessageStore(fileURL: paths.chatMessagesFile(wsID))
             watchdogConfigurations[wsID] =
                 (try? AtomicJSON.read(WorkerWatchdogConfiguration.self, from: paths.watchdogFile(wsID)))
                 ?? WorkerWatchdogConfiguration()
@@ -596,7 +598,11 @@ public final class Engine: @unchecked Sendable {
                 state.aberto = true
                 openWorkspaces.insert(params.id)
                 respondEncodable(client, id: request.id, WorkspaceOpenResult(
-                    workspace: state.workspace, documentSnapshot: decoratedSnapshot(state)))
+                    workspace: state.workspace, documentSnapshot: decoratedSnapshot(state), health: state.health()))
+            case .workspaceHealth:
+                let params = try request.decodeParams(WorkspaceHealthParams.self)
+                let state = try requireWorkspace(params.workspaceID)
+                respondEncodable(client, id: request.id, state.health())
             case .workspaceClose:
                 let params = try request.decodeParams(WorkspaceCloseParams.self)
                 let state = try requireWorkspace(params.id)
@@ -764,6 +770,14 @@ public final class Engine: @unchecked Sendable {
                     approval: try handleApprovalResolve(params, author: client.author)))
             case .messageSend:
                 try handleMessageSend(request, client) // responde por conta própria (bloqueante)
+            case .chatMessageAppend:
+                let params = try request.decodeParams(ChatMessageAppendParams.self)
+                let message = try handleChatMessageAppend(params, author: client.author)
+                respondEncodable(client, id: request.id, ChatMessageResult(message: message))
+            case .chatMessageList:
+                let params = try request.decodeParams(ChatMessageListParams.self)
+                let messages = try handleChatMessageList(params, author: client.author)
+                respondEncodable(client, id: request.id, messages)
             case .noteAppend:
                 let params = try request.decodeParams(NoteAppendParams.self)
                 respondEncodable(client, id: request.id, try handleNoteAppend(params, author: client.author))
@@ -1605,9 +1619,13 @@ public final class Engine: @unchecked Sendable {
         guard !params.nome.isEmpty else {
             throw ProtocolError(name: .invalid_params, message: "nome vazio")
         }
+        let workspaceID = params.id ?? ULID.generate()
+        guard workspaces[workspaceID] == nil else {
+            throw ProtocolError(name: .invalid_params, message: "workspace \(workspaceID) já existe")
+        }
         let now = Date()
         let workspace = Workspace(
-            id: ULID.generate(), nome: params.nome, caminhoRaiz: params.caminhoRaiz,
+            id: workspaceID, nome: params.nome, caminhoRaiz: params.caminhoRaiz,
             viewport: Viewport(), criadoEm: now, atualizadoEm: now)
         let state = try WorkspaceState(
             paths: paths,
@@ -1616,6 +1634,7 @@ public final class Engine: @unchecked Sendable {
         try state.saveWorkspace()
         workspaces[workspace.id] = state
         deliveryStores[workspace.id] = try DeliveryStore(directory: paths.deliveriesDir(workspace.id))
+        chatMessageStores[workspace.id] = try ChatMessageStore(fileURL: paths.chatMessagesFile(workspace.id))
         watchdogConfigurations[workspace.id] = WorkerWatchdogConfiguration()
         workerArchives[workspace.id] = WorkerArchiveService()
         return WorkspaceResult(workspace: workspace)
@@ -1633,6 +1652,7 @@ public final class Engine: @unchecked Sendable {
         workspaces.removeValue(forKey: params.id)
         openWorkspaces.remove(params.id)
         deliveryStores.removeValue(forKey: params.id)
+        chatMessageStores.removeValue(forKey: params.id)
         watchdogConfigurations.removeValue(forKey: params.id)
         workerArchives.removeValue(forKey: params.id)
         for (id, routine) in routines where routine.workspaceID == params.id {
@@ -1662,6 +1682,48 @@ public final class Engine: @unchecked Sendable {
         let store = try DeliveryStore(directory: paths.deliveriesDir(workspaceID))
         deliveryStores[workspaceID] = store
         return store
+    }
+
+    private func chatMessageStore(_ workspaceID: ULID) throws -> ChatMessageStore {
+        if let store = chatMessageStores[workspaceID] { return store }
+        let store = try ChatMessageStore(fileURL: paths.chatMessagesFile(workspaceID))
+        chatMessageStores[workspaceID] = store
+        return store
+    }
+
+    private func handleChatMessageAppend(
+        _ params: ChatMessageAppendParams,
+        author: Author
+    ) throws -> ChatMessage {
+        let state = try authorizeWorkspace(params.workspaceID, author: author)
+        guard state.terminalNode(params.toNodeID) != nil else {
+            throw ProtocolError(name: .node_not_found, message: "destino (params.toNodeID) não existe")
+        }
+        if let fromNodeID = params.fromNodeID {
+            guard state.terminalNode(fromNodeID) != nil else {
+                throw ProtocolError(name: .node_not_found, message: "origem (fromNodeID) não existe")
+            }
+            if case .agente(let rawID) = author, rawID != fromNodeID.string {
+                throw ProtocolError(name: .invalid_params, message: "agente não pode escrever em nome de outro nó")
+            }
+        }
+        return try chatMessageStore(params.workspaceID).append(ChatMessage(
+            workspaceID: params.workspaceID,
+            fromNodeID: params.fromNodeID,
+            toNodeID: params.toNodeID,
+            text: params.text,
+            attachments: params.attachments))
+    }
+
+    private func handleChatMessageList(
+        _ params: ChatMessageListParams,
+        author: Author
+    ) throws -> [ChatMessage] {
+        let state = try authorizeWorkspace(params.workspaceID, author: author)
+        if let nodeID = params.nodeID, state.terminalNode(nodeID) == nil {
+            throw ProtocolError(name: .node_not_found, message: "nó (nodeID) não existe")
+        }
+        return try chatMessageStore(params.workspaceID).list(toNodeID: params.nodeID, limit: params.limit ?? 200)
     }
 
     private func handleMemoryGet(_ params: MemoryGetParams, author: Author) throws -> MemoryGetResult {
@@ -2696,6 +2758,9 @@ public final class Engine: @unchecked Sendable {
         guard state.nodes[params.deNode] != nil else {
             throw ProtocolError(name: .node_not_found, message: "remetente \(params.deNode) não existe")
         }
+        if case .agente(let rawID) = client.author, rawID != params.deNode.string {
+            throw ProtocolError(name: .invalid_params, message: "agente não pode enviar em nome de outro nó")
+        }
         guard let destino = state.terminalPorNome(params.paraNome) else {
             throw ProtocolError(name: .node_not_found, message: "nenhum nó chamado \"\(params.paraNome)\"")
         }
@@ -2720,6 +2785,14 @@ public final class Engine: @unchecked Sendable {
             }
         }
         let messageID = ULID.generate()
+        // A projeção da conversa é gravada no mesmo momento da intenção. O
+        // journal continua registrando a execução e a fila mantém a entrega.
+        try chatMessageStore(params.workspaceID).append(ChatMessage(
+            id: messageID,
+            workspaceID: params.workspaceID,
+            fromNodeID: params.deNode,
+            toNodeID: destino.id,
+            text: params.texto))
         // §14.1.2 — journal do remetente
         if let senderSid = nodeSessions[params.deNode], let sender = sessions[senderSid] {
             sender.journal.append(

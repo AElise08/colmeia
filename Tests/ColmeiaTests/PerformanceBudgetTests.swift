@@ -102,4 +102,43 @@ struct PerformanceBudgetTests {
         print(String(format: "BENCH floor_switch_p95_ms=%.2f samples=%@", p95, String(describing: samples)))
         #expect(p95 < 100, "p95 de floor.switch excedeu 100 ms: \(p95) ms")
     }
+
+    @Test func snapshotsDeDezCinquentaECemNosMantemOrcamento() throws {
+        let workspaceID = ULID.generate()
+        var samples: [String] = []
+        for count in [10, 50, 100] {
+            let nodes: [Node] = (0..<count).map { index in
+                let id = ULID.generate()
+                let point = Ponto(x: Double(index % 10) * 220, y: Double(index / 10) * 180)
+                switch index % 4 {
+                case 0:
+                    return .terminal(TerminalNode(
+                        id: id, posicao: point, tamanho: Tamanho(w: 360, h: 240),
+                        criadoEm: Date(), nome: "terminal-\(index)", adapter: "shell", cwd: "."))
+                case 1:
+                    return .nota(NotaNode(
+                        id: id, posicao: point, tamanho: Tamanho(w: 280, h: 180),
+                        criadoEm: Date(), arquivo: "notes/\(id.string).md", cor: "amarelo"))
+                case 2:
+                    return .desenho(DesenhoNode(
+                        id: id, posicao: point, tamanho: Tamanho(w: 300, h: 200), criadoEm: Date()))
+                default:
+                    return .portal(PortalNode(
+                        id: id, posicao: point, tamanho: Tamanho(w: 420, h: 300),
+                        criadoEm: Date(), url: "https://example.invalid/\(index)"))
+                }
+            }
+            let snapshot = DocumentSnapshot(
+                workspaceID: workspaceID, seq: UInt64(count), nodes: nodes,
+                connections: [], criadoEm: Date())
+            let start = Date()
+            let data = try ColmeiaJSON.encoder().encode(snapshot)
+            let decoded = try ColmeiaJSON.decoder().decode(DocumentSnapshot.self, from: data)
+            let elapsed = milliseconds(since: start)
+            samples.append("\(count):\(String(format: "%.2f", elapsed))ms")
+            #expect(decoded.nodes.count == count)
+            #expect(elapsed < 500, "snapshot de \(count) nós excedeu 500 ms: \(elapsed)")
+        }
+        print("BENCH snapshot_scale=\(samples.joined(separator: ","))")
+    }
 }
