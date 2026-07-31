@@ -17,6 +17,7 @@ public enum ColmeiaMethod: String, Codable, CaseIterable, Sendable {
     case docSnapshot = "doc.snapshot"
     case docHistory = "doc.history"
     case sessionStart = "session.start"
+    case sessionEnsure = "session.ensure"
     case sessionAttach = "session.attach"
     case sessionInput = "session.input"
     case sessionResize = "session.resize"
@@ -76,6 +77,11 @@ public enum ColmeiaMethod: String, Codable, CaseIterable, Sendable {
     case workerArchive = "worker.archive"
     case workerList = "worker.list"
     case workerRestore = "worker.restore"
+    case workerAcquire = "worker.acquire"
+    case delegationCreate = "delegation.create"
+    case delegationWait = "delegation.wait"
+    case delegationDone = "delegation.done"
+    case delegationList = "delegation.list"
     /// Inventário local dos motores e sua disponibilidade nesta máquina.
     case adapterList = "adapter.list"
     case subscribe
@@ -339,17 +345,20 @@ public struct WorkspaceUpdateParams: Codable, Equatable, Sendable {
     public var caminhoRaiz: String?
     public var viewport: Viewport?
     public var cursor: Ponto?
+    public var primaryNodeID: ULID?
 
     enum CodingKeys: String, CodingKey {
         case id, nome, viewport
         case caminhoRaiz = "caminho_raiz"
+        case primaryNodeID = "primary_node_id"
     }
 
-    public init(id: ULID, nome: String? = nil, caminhoRaiz: String? = nil, viewport: Viewport? = nil) {
+    public init(id: ULID, nome: String? = nil, caminhoRaiz: String? = nil, viewport: Viewport? = nil, primaryNodeID: ULID? = nil) {
         self.id = id
         self.nome = nome
         self.caminhoRaiz = caminhoRaiz
         self.viewport = viewport
+        self.primaryNodeID = primaryNodeID
     }
 }
 
@@ -556,6 +565,31 @@ public struct SessionStartParams: Codable, Equatable, Sendable {
     }
 }
 
+/// Garante uma sessão para um nó existente: reutiliza a viva ou relança o
+/// mesmo nó quando ela terminou, preservando o histórico do adapter.
+public struct SessionEnsureParams: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var nodeID: ULID
+    public var floorID: ULID?
+    public var cols: Int?
+    public var rows: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case cols, rows
+        case workspaceID = "workspace_id"
+        case nodeID = "node_id"
+        case floorID = "floor_id"
+    }
+
+    public init(workspaceID: ULID, nodeID: ULID, floorID: ULID? = nil, cols: Int? = nil, rows: Int? = nil) {
+        self.workspaceID = workspaceID
+        self.nodeID = nodeID
+        self.floorID = floorID
+        self.cols = cols
+        self.rows = rows
+    }
+}
+
 public struct SessionResult: Codable, Equatable, Sendable {
     public var session: Session
 
@@ -563,6 +597,56 @@ public struct SessionResult: Codable, Equatable, Sendable {
         self.session = session
     }
 }
+
+public struct WorkerAcquireParams: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var role: String
+    public var adapter: String
+    public var newIdentity: Bool
+    enum CodingKeys: String, CodingKey { case role, adapter; case workspaceID = "workspace_id"; case newIdentity = "new" }
+    public init(workspaceID: ULID, role: String, adapter: String, newIdentity: Bool = false) {
+        self.workspaceID = workspaceID; self.role = role; self.adapter = adapter; self.newIdentity = newIdentity
+    }
+}
+
+public struct WorkerAcquireResult: Codable, Equatable, Sendable {
+    public var node: TerminalNode
+    public var session: Session
+    public var reused: Bool
+    public init(node: TerminalNode, session: Session, reused: Bool) { self.node = node; self.session = session; self.reused = reused }
+}
+
+public struct DelegationCreateParams: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var principalNodeID: ULID
+    public var role: String
+    public var adapter: String
+    public var task: String
+    public var newIdentity: Bool
+    enum CodingKeys: String, CodingKey { case role, adapter, task; case workspaceID = "workspace_id"; case principalNodeID = "principal_node_id"; case newIdentity = "new" }
+    public init(workspaceID: ULID, principalNodeID: ULID, role: String, adapter: String, task: String, newIdentity: Bool = false) {
+        self.workspaceID = workspaceID; self.principalNodeID = principalNodeID; self.role = role; self.adapter = adapter; self.task = task; self.newIdentity = newIdentity
+    }
+}
+
+public struct DelegationDoneParams: Codable, Equatable, Sendable {
+    public var delegationID: ULID
+    public var status: DelegationEstado
+    public var result: String
+    public var deliveryID: ULID?
+    enum CodingKeys: String, CodingKey { case status, result; case delegationID = "delegation_id"; case deliveryID = "delivery_id" }
+    public init(delegationID: ULID, status: DelegationEstado = .completed, result: String, deliveryID: ULID? = nil) {
+        self.delegationID = delegationID; self.status = status; self.result = result; self.deliveryID = deliveryID
+    }
+}
+
+public struct DelegationResult: Codable, Equatable, Sendable { public var delegation: Delegation; public init(delegation: Delegation) { self.delegation = delegation } }
+public struct DelegationWaitParams: Codable, Equatable, Sendable {
+    public var delegationID: ULID
+    enum CodingKeys: String, CodingKey { case delegationID = "delegation_id" }
+    public init(delegationID: ULID) { self.delegationID = delegationID }
+}
+public struct DelegationListParams: Codable, Equatable, Sendable { public var workspaceID: ULID; public init(workspaceID: ULID) { self.workspaceID = workspaceID } }
 
 /// Replay + stream ao vivo emendados sem buraco nem duplicata (§8.4).
 public struct SessionAttachParams: Codable, Equatable, Sendable {

@@ -43,6 +43,8 @@ subcomandos:
                                   click, fill, key e eval
   colmeia memory show|propose|history memória curada; agentes só propõem
   colmeia done --status ... --summary ... declara entrega com evidências
+  colmeia workers acquire --role <papel> --adapter <adapter> [--new]
+  colmeia delegate --role <papel> --adapter <adapter> [--new] <tarefa>
   colmeia deliveries [--pending|--accepted] lista entregas do workspace
   colmeia mission ...              Missão / Frente / Decisão / briefing (§5)
   colmeia version | --version
@@ -87,6 +89,10 @@ case "memory":
     exitCode = await MemoryCommand.run(Array(cliArguments.dropFirst()))
 case "done":
     exitCode = await DoneCommand.run(Array(cliArguments.dropFirst()))
+case "workers":
+    exitCode = await WorkersCommand.run(Array(cliArguments.dropFirst()))
+case "delegate":
+    exitCode = await DelegateCommand.run(Array(cliArguments.dropFirst()))
 case "deliveries":
     exitCode = await DeliveriesCommand.run(Array(cliArguments.dropFirst()))
 case "room":

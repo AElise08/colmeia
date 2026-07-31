@@ -30,9 +30,7 @@ final class HubConnection: ObservableObject {
     public var onConnected: (() async -> Void)?
     public var hubToken: String?
 
-    private var webSocketTask: URLSessionWebSocketTask?
-    private var pendingRequests: [String: CheckedContinuation<ResponseMessage, Error>] = [:]
-    private var requestCounter: UInt64 = 0
+    private var socketClient: SocketClient?
     private var reconnectAttempt = 0
     private var loopTask: Task<Void, Never>?
     private var eventObservers: [UUID: (EventMessage) -> Void] = [:]
@@ -106,36 +104,10 @@ final class HubConnection: ObservableObject {
     }
 
     public func callRaw(method: String, params: JSONValue?) async throws -> JSONValue {
-        guard let task = webSocketTask else {
+        guard let socketClient else {
             throw ProtocolError(name: .internal_error, message: "HubConnection não está conectado ao Hub remoto (\(hubURL))")
         }
-
-        requestCounter += 1
-        let reqID = "hub-\(requestCounter)-\(ULID.generate().string)"
-        let requestMsg = RequestMessage(id: reqID, method: method, params: params)
-        let envelope = Envelope.request(requestMsg)
-
-        let data = try SocketFraming.encodeLine(envelope)
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw ProtocolError(name: .internal_error, message: "Falha ao codificar mensagem para JSON")
-        }
-
-        let response: ResponseMessage = try await withCheckedThrowingContinuation { continuation in
-            pendingRequests[reqID] = continuation
-            task.send(.string(text)) { [weak self] error in
-                if let error {
-                    Task { @MainActor [weak self] in
-                        let orphan = self?.pendingRequests.removeValue(forKey: reqID)
-                        orphan?.resume(throwing: error)
-                    }
-                }
-            }
-        }
-
-        if response.ok {
-            return response.result ?? .object([:])
-        }
-        throw response.error ?? ProtocolError(name: .internal_error, message: "response !ok sem error")
+        return try await socketClient.callRaw(method: method, params: params)
     }
 
     // MARK: - Reconnection Loop
@@ -160,57 +132,16 @@ final class HubConnection: ObservableObject {
     }
 
     private func connectAndListen() async throws {
-        var urlString = hubURL
-        if !urlString.hasPrefix("ws://") && !urlString.hasPrefix("wss://") {
-            urlString = "ws://" + urlString
-        }
-        guard let url = URL(string: urlString) else {
-            throw ProtocolError(name: .invalid_params, message: "URL do Hub inválida: \(hubURL)")
-        }
+        let client = SocketClient()
+        try client.connect(to: hubURL)
+        socketClient = client
 
-        let session = URLSession(configuration: .default)
-        let task = session.webSocketTask(with: url)
-        self.webSocketTask = task
-        task.resume()
-
-        let listenTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let ws = task as URLSessionWebSocketTask? else { break }
-                do {
-                    let message = try await ws.receive()
-                    let data: Data
-                    switch message {
-                    case .string(let text):
-                        data = Data(text.utf8)
-                    case .data(let d):
-                        data = d
-                    @unknown default:
-                        continue
-                    }
-                    self?.handleReceivedLine(data)
-                } catch {
-                    break
-                }
-            }
-        }
-
-        // Send Hello Handshake
         let author = Author.humano(InstallationIdentity.current().string)
-        let helloParams = HelloParams(protocolVersion: ColmeiaVersion.protocolVersion, client: "canvas-ui", author: author)
-
-        // Marcar temporariamente como conectado para permitir que hello passe pelo check
         status = .conectado
-
-        let helloParamsWithToken = HelloParams(
-            protocolVersion: helloParams.protocolVersion,
-            client: helloParams.client,
-            author: helloParams.author,
-            token: hubToken)
         let helloResult: HelloResult
         do {
-            helloResult = try await call(.hello, params: helloParamsWithToken, expecting: HelloResult.self)
+            helloResult = try await client.hello(client: "canvas-ui", author: author, token: hubToken)
         } catch {
-            listenTask.cancel()
             status = .conectando
             throw error
         }
@@ -220,32 +151,15 @@ final class HubConnection: ObservableObject {
         reconnectAttempt = 0
         await onConnected?()
 
-        _ = await listenTask.result
-    }
-
-    private func handleReceivedLine(_ data: Data) {
-        guard let envelope = try? SocketFraming.decodeLine(Envelope.self, from: data) else { return }
-        switch envelope {
-        case .response(let response):
-            if let continuation = pendingRequests.removeValue(forKey: response.id) {
-                continuation.resume(returning: response)
-            }
-        case .event(let event):
+        for await event in client.events {
             onEvent?(event)
             for observer in eventObservers.values { observer(event) }
-        case .request:
-            break
         }
     }
 
     private func disconnectWebSocket() {
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
-        webSocketTask = nil
-        let orphans = pendingRequests
-        pendingRequests.removeAll()
-        for (_, continuation) in orphans {
-            continuation.resume(throwing: SocketClientError.connectionClosed)
-        }
+        socketClient?.close()
+        socketClient = nil
     }
 }
 

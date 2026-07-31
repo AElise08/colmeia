@@ -5,6 +5,10 @@ import ColmeiaKit
 
 extension Notification.Name {
     static let colmeiaOpenRooms = Notification.Name("com.mel.colmeia.openRooms")
+    static let colmeiaShowCanvas = Notification.Name("com.mel.colmeia.showCanvas")
+    static let colmeiaShowAgentChat = Notification.Name("com.mel.colmeia.showAgentChat")
+    static let colmeiaShowNow = Notification.Name("com.mel.colmeia.showNow")
+    static let colmeiaShowAttention = Notification.Name("com.mel.colmeia.showAttention")
 }
 
 @MainActor
@@ -131,6 +135,23 @@ struct ColmeiaCanvasApp: App {
                     .keyboardShortcut("p", modifiers: [.command, .shift])
             }
             CommandMenu("Canvas") {
+                Button("Canvas") {
+                    NotificationCenter.default.post(name: .colmeiaShowCanvas, object: nil)
+                }
+                .keyboardShortcut("1", modifiers: .command)
+                Button("Agent Chat") {
+                    NotificationCenter.default.post(name: .colmeiaShowAgentChat, object: nil)
+                }
+                .keyboardShortcut("2", modifiers: .command)
+                Button("Atenção") {
+                    NotificationCenter.default.post(name: .colmeiaShowAttention, object: nil)
+                }
+                .keyboardShortcut("a", modifiers: [.command, .option])
+                Button("Agora") {
+                    NotificationCenter.default.post(name: .colmeiaShowNow, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+                Divider()
                 Button("Ampliar") { store.zoom(by: 1.25) }
                     .keyboardShortcut("=", modifiers: .command)
                 Button("Reduzir") { store.zoom(by: 0.8) }

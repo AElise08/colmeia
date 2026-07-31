@@ -11,6 +11,16 @@ public enum MemberRole: String, Codable, CaseIterable, Sendable {
     case editor
     /// Somente leitura.
     case viewer
+
+    public init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "owner", "admin": self = .owner
+        case "editor", "writer": self = .editor
+        case "viewer", "observer", "reader": self = .viewer
+        default: self = .viewer
+        }
+    }
 }
 
 public enum MemberStatus: String, Codable, CaseIterable, Sendable {
@@ -30,7 +40,7 @@ public struct Member: Codable, Equatable, Sendable {
     public var joinedAt: Date
 
     enum CodingKeys: String, CodingKey {
-        case id, roles, status
+        case id, role, roles, status
         case displayName = "display_name"
         case publicKey = "public_key"
         case joinedAt = "joined_at"
@@ -57,9 +67,37 @@ public struct Member: Codable, Equatable, Sendable {
         self.id = try container.decode(String.self, forKey: .id)
         self.displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? id
         self.publicKey = try container.decodeIfPresent(String.self, forKey: .publicKey)
-        self.roles = try container.decodeIfPresent(Set<MemberRole>.self, forKey: .roles) ?? [.viewer]
+        if let roleNames = try container.decodeIfPresent([String].self, forKey: .roles) {
+            self.roles = Self.normalizeRoles(roleNames)
+        } else if let legacyRole = try container.decodeIfPresent(MemberRole.self, forKey: .role) {
+            self.roles = [legacyRole]
+        } else {
+            self.roles = [.viewer]
+        }
         self.status = try container.decodeIfPresent(MemberStatus.self, forKey: .status) ?? .active
         self.joinedAt = try container.decodeIfPresent(Date.self, forKey: .joinedAt) ?? Date()
+    }
+
+    private static func normalizeRoles(_ names: [String]) -> Set<MemberRole> {
+        let roles = Set(names.compactMap { name -> MemberRole? in
+            switch name {
+            case "owner", "admin": return .owner
+            case "editor", "writer": return .editor
+            case "viewer", "observer", "reader": return .viewer
+            default: return nil
+            }
+        })
+        return roles.isEmpty ? [.viewer] : roles
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encodeIfPresent(publicKey, forKey: .publicKey)
+        try container.encode(roles, forKey: .roles)
+        try container.encode(status, forKey: .status)
+        try container.encode(joinedAt, forKey: .joinedAt)
     }
 
     public var isActive: Bool { status == .active }

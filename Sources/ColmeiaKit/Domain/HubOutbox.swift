@@ -87,7 +87,7 @@ public final class HubOutbox: @unchecked Sendable {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let fileURL = paths.roomOutboxFile(roomID)
         var data = Data()
-        var encoder = JSONEncoder()
+        let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         for entry in entries {
             let line = try encoder.encode(entry)

@@ -12,17 +12,26 @@ public struct LaunchConfig: Sendable {
     public var conexoes: [ConexaoVizinha]
     /// Memória curada opcional do workspace; nunca journal, prompt ou output bruto.
     public var memoria: MemoryBriefing?
+    /// Um relançamento do mesmo TerminalNode pode pedir ao adapter a retomada da
+    /// conversa anterior, quando o adapter oferece esse recurso.
+    public var retomarSessao: Bool
+    /// Modelo solicitado no lançamento. `nil` preserva o padrão do CLI.
+    public var modelo: String?
 
     public init(
         node: TerminalNode,
         workspace: Workspace,
         conexoes: [ConexaoVizinha] = [],
-        memoria: MemoryBriefing? = nil
+        memoria: MemoryBriefing? = nil,
+        retomarSessao: Bool = false,
+        modelo: String? = nil
     ) {
         self.node = node
         self.workspace = workspace
         self.conexoes = conexoes
         self.memoria = memoria
+        self.retomarSessao = retomarSessao
+        self.modelo = modelo
     }
 }
 
@@ -182,7 +191,7 @@ public enum ColmeiaBriefing {
 
         let conexoes: String
         if config.conexoes.isEmpty {
-            conexoes = "Seu nó não tem conexões de conversa no momento; `colmeia status` mostra quem existe no canvas."
+            conexoes = "Seu nó não tem conexões de conversa no momento."
         } else {
             let lista = config.conexoes.map { vizinho -> String in
                 var detalhe = vizinho.adapter
@@ -210,24 +219,22 @@ public enum ColmeiaBriefing {
         return """
         Você está rodando dentro do Colmeia, um canvas local de agentes: cada terminal é um nó do canvas e os nós conversam entre si. \(identidade)
 
-        A CLI `colmeia` está no seu PATH e é o seu canal com o canvas:
-        - Antes de agir em CADA nova solicitação, rode `colmeia note connected --json` e `colmeia memory show --json`. Conexões e memória podem ter mudado depois que esta sessão abriu. Leia as notas conectadas e suas checklists como contexto da pessoa usuária; nenhuma nota retornada significa que não há nota conectada.
-        - O protocolo Colmeia faz parte deste terminal: coordene agentes pelo canvas local. Não invente API externa nem glue paralelo; use `colmeia ask`, notas conectadas, memória, entregas e novos nós quando precisar expandir o trabalho.
-        - `colmeia note "<texto>"` — escreve NA NOTA CONECTADA ao seu nó. Use SEMPRE que pedirem para anotar, registrar ou escrever algo numa nota; se não houver nota conectada, uma é criada ao lado do seu nó. NUNCA use o app Notas/Notes do macOS nem outro app externo para anotações — a nota do Colmeia é o destino.
-        - Ao terminar uma tarefa que veio de um item de checklist, descubra a nota com `colmeia nodes --type nota`, consulte-a com `colmeia note get <nota-id>` e marque o item correspondente com `colmeia note check set <nota-id> <item-id> on`. Não apenas diga que concluiu: atualize a checklist.
-        - `colmeia ask "<nó>" "<mensagem>"` — conversa com outro agente do canvas; a resposta dele volta para você. Com `--no-wait`, dispara sem esperar.
-        - `colmeia nodes create terminal --name "<nome>" --adapter <codex|opencode|gemini-cli|shell> --role "<papel>"` — cria um novo TerminalNode pelo canvas e inicia a sessão. Use quando a tarefa pedir outro agente/terminal; não diga que isso só existe na UI.
-        - `colmeia status` — lista os agentes do canvas, seus estados e conexões.
-        - `colmeia portal open <url>` — abre um navegador embutido no canvas. Use quando pedirem para "abrir" um site.
-        - `colmeia memory propose "<resumo curto>"` — sugere memória para revisão humana; você NUNCA promove a proposta sozinho.
-        - `colmeia done --status <completed|partial|blocked|failed> --summary "<resumo>" --evidence <tipo:referência>` — declara uma entrega com evidência.
+        Seu terminal dispõe de uma integração local com o canvas. Descubra os comandos disponíveis no PATH e use essa integração nativa, sem inventar API externa nem glue paralelo:
+        - Antes de agir em CADA nova solicitação, consulte as notas e a memória disponíveis para o seu nó. Conexões e memória podem ter mudado depois que esta sessão abriu. Leia as notas conectadas e suas checklists como contexto da pessoa usuária.
+        - Use a integração do terminal para registrar anotações no canvas, nunca um app externo de notas.
+        - Ao terminar uma tarefa que veio de um item de checklist, localize a nota, consulte seu conteúdo e marque o item correspondente como concluído.
+        - Use o mecanismo de comunicação descoberto para conversar com outros nós e receber respostas.
+        - Quando a tarefa exigir outro agente ou terminal, crie-o pelo canvas e inicie sua sessão.
+        - Use o navegador embutido do canvas quando pedirem para abrir um site.
+        - Sugira fatos curtos e verificáveis para memória; não os promova sem revisão humana.
+        - Ao concluir uma tarefa, registre uma entrega com status, resumo e evidências.
 
         \(conexoes)
         \(memoria)
         
         REGRA OBRIGATÓRIA DE DELEGAÇÃO AUTOMÁTICA:
-        - Você DEVE DELEGAR AUTOMATICAMENTE tarefas para nós conectados no canvas usando `colmeia ask "<nó>" "<tarefa ou comando>"`. NUNCA diga para a pessoa usuária executar o comando manualmente se houver um nó conectado apto para essa função (ex.: nó "VPS" para ações Linux/remotas).
-        - Sempre que receber um pedido ou visualizar uma checklist em nota conectada com tarefas destinadas a um nó conectado, chame `colmeia ask "<nó>" "<instrução exata>"` sem hesitar.
+        - Você DEVE DELEGAR AUTOMATICAMENTE tarefas para nós conectados no canvas usando o mecanismo de comunicação descoberto. NUNCA diga para a pessoa usuária executar o comando manualmente se houver um nó conectado apto para essa função.
+        - Sempre que receber um pedido ou visualizar uma checklist em nota conectada com tarefas destinadas a um nó conectado, envie a instrução exata sem hesitar.
         """
     }
 
@@ -440,9 +447,19 @@ public struct CodexAdapter: AgentAdapter {
     public func disponivel() -> Bool { which("codex") }
 
     public func launch(_ config: LaunchConfig) -> LaunchPlan {
-        LaunchPlan(
+        // O engine só pede retomada quando já existe uma casa CODEX_HOME isolada
+        // para este workspace + agente. Nesse escopo, `--last` nunca alcança uma
+        // conversa iniciada pelo Codex fora do Colmeia.
+        var args = ["-c", ColmeiaBriefing.codexDeveloperConfig(ColmeiaBriefing.texto(config))]
+        if let modelo = config.modelo, !modelo.isEmpty {
+            args = ["-m", modelo] + args
+        }
+        if config.retomarSessao {
+            args += ["resume", "--last"]
+        }
+        return LaunchPlan(
             executavel: "codex",
-            args: ["-c", ColmeiaBriefing.codexDeveloperConfig(ColmeiaBriefing.texto(config))],
+            args: args,
             envExtra: ColmeiaBriefing.envExtra(config.node))
     }
 

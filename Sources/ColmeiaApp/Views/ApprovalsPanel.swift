@@ -32,7 +32,7 @@ struct ApprovalsPanel: View {
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         ForEach(store.pendingApprovals, id: \.id) { approval in
-                            ApprovalRow(approval: approval) {
+                            ApprovalCard(approval: approval) {
                                 dismiss()
                             }
                         }
@@ -48,7 +48,7 @@ struct ApprovalsPanel: View {
     }
 }
 
-private struct ApprovalRow: View {
+struct ApprovalCard: View {
     let approval: Approval
     let onNavigate: () -> Void
 
@@ -79,6 +79,16 @@ private struct ApprovalRow: View {
             Text(approval.resumo)
                 .font(.system(size: 12))
                 .textSelection(.enabled)
+
+            if let delegation = store.delegation(for: approval) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Delegated by \(store.terminalName(delegation.principalNodeID) ?? "primary agent")")
+                    Text("Task: \(delegation.task)")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            }
 
             HStack(spacing: 8) {
                 if let opcoes = approval.opcoes, !opcoes.isEmpty {

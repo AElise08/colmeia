@@ -9,6 +9,8 @@ struct FloorBar: View {
     @State private var nomeNovo = ""
     @State private var branchNova = ""
     @State private var confirmandoDescarte: Floor?
+    @State private var erroCriacao: String?
+    @State private var criandoEmAndamento = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -31,6 +33,7 @@ struct FloorBar: View {
                 Button("Novo andar…") {
                     nomeNovo = ""
                     branchNova = ""
+                    erroCriacao = nil
                     criando = true
                 }
             } label: {
@@ -87,6 +90,12 @@ struct FloorBar: View {
     private var formNovoAndar: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Novo andar").font(.headline)
+            if let erroCriacao {
+                Label(erroCriacao, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Form {
                 TextField("Nome:", text: $nomeNovo, prompt: Text("bugfix-login"))
                 TextField("Branch (opcional):", text: $branchNova, prompt: Text("andar/<nome>"))
@@ -98,16 +107,20 @@ struct FloorBar: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Criar") {
                     let branch = branchNova.trimmingCharacters(in: .whitespaces)
+                    erroCriacao = nil
+                    criandoEmAndamento = true
                     Task {
-                        await store.createFloor(
+                        let sucesso = await store.createFloor(
                             nome: nomeNovo.trimmingCharacters(in: .whitespaces),
                             branch: branch.isEmpty ? nil : branch
                         )
+                        if sucesso { criando = false }
+                        else { erroCriacao = store.lastError ?? "Não foi possível criar o andar." }
+                        criandoEmAndamento = false
                     }
-                    criando = false
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(nomeNovo.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(nomeNovo.trimmingCharacters(in: .whitespaces).isEmpty || criandoEmAndamento)
             }
         }
         .padding(16)

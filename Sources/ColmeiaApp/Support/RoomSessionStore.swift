@@ -12,18 +12,11 @@ final class RoomSessionStore: ObservableObject {
     @Published private(set) var joined = false
 
     private weak var hub: HubConnection?
-    private var eventTask: Task<Void, Never>?
 
     var onRoomReady: ((Room) -> Void)?
 
     func connect(hub: HubConnection) {
         self.hub = hub
-        eventTask?.cancel()
-        eventTask = Task { [weak self] in
-            for await _ in NotificationCenter.default.notifications(named: .init("hubEvent")) {
-                // Será substituído pelo callback direto abaixo
-            }
-        }
         hub.onEvent = { [weak self] event in
             Task { @MainActor in
                 self?.handleEvent(event)
@@ -32,8 +25,6 @@ final class RoomSessionStore: ObservableObject {
     }
 
     func disconnect() {
-        eventTask?.cancel()
-        eventTask = nil
         hub?.onEvent = nil
     }
 
@@ -78,9 +69,7 @@ final class RoomSessionStore: ObservableObject {
                 room = payload.room
             }
         case .presenceChanged:
-            if let payload = try? event.decodeParams(PresenceChangedTopicPayload.self) {
-                // Atualiza presença (cores/status)
-            }
+            _ = try? event.decodeParams(PresenceChangedTopicPayload.self)
         case .sessionEventAppended:
             break
         default:

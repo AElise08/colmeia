@@ -47,23 +47,19 @@ struct BriefingTests {
             return
         }
         let briefing = plan.args[flagIdx + 1]
-        // gate não-oco: identidade, instrução da nota, delegação e topologia
+        // gate não-oco: identidade, descoberta da integração, delegação e topologia
         #expect(briefing.contains("Colmeia"))
         #expect(briefing.contains("Plinio"))
         #expect(briefing.contains("Pesquisador"))
-        #expect(briefing.contains("colmeia note"))
-        #expect(briefing.contains("colmeia note connected --json"))
-        #expect(briefing.contains("colmeia nodes --type nota"))
-        #expect(briefing.contains("colmeia note get <nota-id>"))
-        #expect(briefing.contains("colmeia note check set <nota-id> <item-id> on"))
-        #expect(briefing.contains("colmeia ask"))
-        #expect(briefing.contains("protocolo Colmeia"))
-        #expect(briefing.contains("colmeia nodes create terminal"))
-        #expect(briefing.contains("colmeia status"))
-        #expect(briefing.contains("colmeia portal open"))
-        #expect(briefing.contains("Notas/Notes"))
+        #expect(briefing.contains("Descubra os comandos disponíveis no PATH"))
+        #expect(briefing.contains("notas conectadas"))
+        #expect(briefing.contains("item correspondente como concluído"))
+        #expect(briefing.contains("mecanismo de comunicação descoberto"))
+        #expect(briefing.contains("integração local com o canvas"))
+        #expect(briefing.contains("crie-o pelo canvas"))
+        #expect(briefing.contains("navegador embutido"))
         #expect(briefing.contains("\"Beta\" (opencode, papel Coder)"))
-        #expect(briefing.contains("--no-wait"))
+        #expect(!briefing.contains("`colmeia"))
         // env informativa junto
         #expect(plan.envExtra[ColmeiaEnv.nodeNome] == "Plinio")
         #expect(plan.envExtra[ColmeiaEnv.nodePapel] == "Pesquisador")
@@ -81,7 +77,6 @@ struct BriefingTests {
         }
         let briefing = plan.args[flagIdx + 1]
         #expect(briefing.contains("não tem conexões"))
-        #expect(briefing.contains("colmeia status"))
     }
 
     @Test func comandoOverrideEhSagradoSemBriefingNosArgs() {
@@ -113,11 +108,48 @@ struct BriefingTests {
         let codex = CodexAdapter().launch(config)
         #expect(codex.args.first == "-c")
         #expect(codex.args.dropFirst().first?.contains("developer_instructions=") == true)
-        #expect(codex.args.dropFirst().first?.contains("colmeia note connected") == true)
+        #expect(codex.args.dropFirst().first?.contains("Descubra os comandos disponíveis no PATH") == true)
+        #expect(codex.args.dropFirst().first?.contains("`colmeia") == false)
 
         let openCode = OpenCodeAdapter().launch(config)
         #expect(openCode.args.first == "--prompt")
-        #expect(openCode.args.dropFirst().first?.contains("colmeia note connected --json") == true)
+        #expect(openCode.args.dropFirst().first?.contains("Descubra os comandos disponíveis no PATH") == true)
+        #expect(openCode.args.dropFirst().first?.contains("`colmeia") == false)
+    }
+
+    @Test func codexRetomaQuandoOEngineGaranteUmaCasaIsolada() {
+        let node = makeTerminalNode(nome: "Alfie", adapter: "codex")
+        let config = LaunchConfig(node: node, workspace: makeConfig(node).workspace, retomarSessao: true)
+        let plan = CodexAdapter().launch(config)
+
+        #expect(plan.args.contains("resume"))
+        #expect(plan.args.contains("--last"))
+    }
+
+    @Test func codexRecebeModeloEscolhidoDoAgente() {
+        let node = makeTerminalNode(nome: "Alfie", adapter: "codex")
+        let config = LaunchConfig(
+            node: node, workspace: makeConfig(node).workspace, modelo: "gpt-test-model")
+        let plan = CodexAdapter().launch(config)
+
+        #expect(plan.args.prefix(2) == ["-m", "gpt-test-model"])
+    }
+
+    @Test func casaDoCodexPorAgenteNaoConfundeSessoes() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = ColmeiaPaths(root: root)
+        let workspaceID = ULID.generate()
+        let first = try CodexAgentHome.prepare(
+            paths: paths, workspaceID: workspaceID, nodeID: ULID.generate(), inheritedEnvironment: [:])
+        let second = try CodexAgentHome.prepare(
+            paths: paths, workspaceID: workspaceID, nodeID: ULID.generate(), inheritedEnvironment: [:])
+        let sessionFile = first.appendingPathComponent("sessions/2026/07/30/agent.jsonl")
+        try FileManager.default.createDirectory(at: sessionFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: sessionFile)
+
+        #expect(CodexAgentHome.hasSession(in: first))
+        #expect(!CodexAgentHome.hasSession(in: second))
     }
 }
 
@@ -255,7 +287,7 @@ struct CanvasAwarenessSocketTests {
             }
         }
         #expect(avisoBeta?.contains("conectado ao nó \"Alfa\"") == true)
-        #expect(avisoBeta?.contains("colmeia ask \"Alfa\"") == true)
+        #expect(avisoBeta?.contains("mecanismo de descoberta de comandos") == true)
         // a linha foi de fato injetada no PTY (cat ecoa o input)
         let ecoBeta = try await replayTexto(client, sessaoBeta)
         #expect(ecoBeta.contains("[colmeia] conectado"))

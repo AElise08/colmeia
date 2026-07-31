@@ -21,6 +21,48 @@ public enum EngineStartError: Error, CustomStringConvertible {
     public var description: String { "outra instância do engine detém o lock" }
 }
 
+/// O Codex CLI persiste o histórico dentro de `CODEX_HOME`. Cada agente do
+/// Colmeia ganha uma casa própria: assim a sua conversa pode ser retomada sem
+/// o risco de o comando `resume --last` escolher uma conversa de outro terminal.
+enum CodexAgentHome {
+    static func prepare(
+        paths: ColmeiaPaths,
+        workspaceID: ULID,
+        nodeID: ULID,
+        inheritedEnvironment: [String: String]
+    ) throws -> URL {
+        let home = paths.workspaceDir(workspaceID)
+            .appendingPathComponent("codex", isDirectory: true)
+            .appendingPathComponent(nodeID.string, isDirectory: true)
+        let fm = FileManager.default
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+
+        // Autenticação e preferências continuam sendo as da pessoa usuária. Nós
+        // só separamos os dados voláteis (histórico, sessões e state) do agente.
+        let originalRoot = inheritedEnvironment["CODEX_HOME"].map(URL.init(fileURLWithPath:))
+            ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+        for filename in ["auth.json", "config.toml"] {
+            let original = originalRoot.appendingPathComponent(filename)
+            let link = home.appendingPathComponent(filename)
+            guard fm.fileExists(atPath: original.path),
+                  !fm.fileExists(atPath: link.path) else { continue }
+            try fm.createSymbolicLink(atPath: link.path, withDestinationPath: original.path)
+        }
+        return home
+    }
+
+    static func hasSession(in home: URL) -> Bool {
+        let sessions = home.appendingPathComponent("sessions", isDirectory: true)
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessions, includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return false }
+        for case let file as URL in enumerator where file.pathExtension == "jsonl" {
+            return true
+        }
+        return false
+    }
+}
+
 /// Daemon headless (§3.1), dono de todo estado autoritativo. Toda mutação de estado
 /// roda na `stateQueue` (serial); I/O de PTY e de clientes roda em queues próprias e
 /// converge para cá. A UI/CLI só falam com isto pelo protocolo §6 sobre o socket.
@@ -54,6 +96,9 @@ public final class Engine: @unchecked Sendable {
     var deliveryStores: [ULID: DeliveryStore] = [:]
     var watchdogConfigurations: [ULID: WorkerWatchdogConfiguration] = [:]
     var workerArchives: [ULID: WorkerArchiveService] = [:]
+    var delegations: [ULID: [ULID: Delegation]] = [:]
+    var delegationWaiters: [ULID: [(Delegation) -> Void]] = [:]
+    var semanticEvents: [ULID: [SemanticEvent]] = [:]
     var watchdogAlertedSessions: Set<ULID> = []
     let watchdog = WorkerWatchdogService()
     var portalBrowsers: [ULID: PortalBrowserSession] = [:]
@@ -108,6 +153,9 @@ public final class Engine: @unchecked Sendable {
         let server = SocketServer(path: paths.engineSocket.path, tcpPort: engineTCPPort, engine: self)
         try server.start()
         self.server = server
+        stateQueue.async { [weak self] in
+            self?.recoverActiveDelegations()
+        }
         startTimers()
         log.info("engine_start", ColmeiaEngineInfo.banner())
     }
@@ -213,6 +261,9 @@ public final class Engine: @unchecked Sendable {
         else { return }
         for entry in entries {
             guard let wsID = ULID(entry.lastPathComponent) else { continue }
+            guard fm.fileExists(atPath: paths.workspaceFile(wsID).path) else {
+                continue
+            }
             guard let workspace = try? AtomicJSON.read(Workspace.self, from: paths.workspaceFile(wsID)) else {
                 log.warn("workspace_illegivel", "workspace.json ilegível em \(entry.lastPathComponent)")
                 continue
@@ -232,6 +283,9 @@ public final class Engine: @unchecked Sendable {
                 (try? AtomicJSON.read([WorkerArchiveTombstone].self, from: paths.workerArchiveFile(wsID)))
                 ?? []
             workerArchives[wsID] = WorkerArchiveService(records: archived)
+            let savedDelegations = (try? AtomicJSON.read([Delegation].self, from: paths.delegationsFile(wsID))) ?? []
+            delegations[wsID] = Dictionary(uniqueKeysWithValues: savedDelegations.map { ($0.id, $0) })
+            semanticEvents[wsID] = Self.readSemanticEvents(from: paths.semanticEventsFile(wsID))
             if let notice = state.corruptionNotice {
                 log.warn("document_corrupted", notice, workspaceID: wsID)
             }
@@ -265,14 +319,45 @@ public final class Engine: @unchecked Sendable {
         ) else { return }
         for entry in entries {
             guard let roomID = ULID(entry.lastPathComponent) else { continue }
+            let snapshotURL = paths.roomSnapshotFile(roomID)
+            let legacyRoomURL = paths.roomFile(roomID)
+            guard fm.fileExists(atPath: snapshotURL.path)
+                    || fm.fileExists(atPath: legacyRoomURL.path) else {
+                continue
+            }
             do {
-                let store = try RoomStore.load(from: paths, roomID: roomID)
+                let store: RoomStore
+                if fm.fileExists(atPath: snapshotURL.path) {
+                    store = try RoomStore.load(from: paths, roomID: roomID)
+                } else {
+                    let room = try AtomicJSON.read(Room.self, from: legacyRoomURL)
+                    guard room.id == roomID else {
+                        throw RoomStoreError.roomNotFound(roomID)
+                    }
+                    store = RoomStore(room: room)
+                    let legacyMembers = (try? AtomicJSON.read(
+                        [Member].self, from: paths.roomMembersFile(roomID))) ?? []
+                    for member in legacyMembers where member.status == .active {
+                        _ = try store.addMember(
+                            id: member.id,
+                            displayName: member.displayName,
+                            roles: member.roles,
+                            now: member.joinedAt)
+                    }
+                    try store.persist(to: paths)
+                    log.info(
+                        "room_migrated",
+                        "sala legada migrada para snapshot",
+                        workspaceID: nil)
+                }
                 guard store.getRoom().state == .active else { continue }
                 roomStores[roomID] = store
                 missionStores[roomID] = (try? MissionStore.load(from: paths, roomID: roomID))
                     ?? MissionStore(roomID: roomID)
             } catch {
-                log.warn("room_unreadable", "sala multiplayer ilegível em \(entry.lastPathComponent)")
+                log.warn(
+                    "room_unreadable",
+                    "sala multiplayer ilegível em \(entry.lastPathComponent): \(error)")
             }
         }
     }
@@ -535,6 +620,12 @@ public final class Engine: @unchecked Sendable {
                     }
                     state.workspace.viewport = viewport
                 }
+                if let primaryNodeID = params.primaryNodeID {
+                    guard state.terminalNode(primaryNodeID) != nil else {
+                        throw ProtocolError(name: .node_not_found, message: "principal não é um terminal deste workspace")
+                    }
+                    state.workspace.primaryNodeID = primaryNodeID
+                }
                 state.workspace.atualizadoEm = Date()
                 try? state.saveWorkspace()
                 respondEncodable(client, id: request.id, WorkspaceResult(workspace: state.workspace))
@@ -590,6 +681,9 @@ public final class Engine: @unchecked Sendable {
             case .sessionStart:
                 let params = try request.decodeParams(SessionStartParams.self)
                 respondEncodable(client, id: request.id, SessionResult(session: try handleSessionStart(params)))
+            case .sessionEnsure:
+                let params = try request.decodeParams(SessionEnsureParams.self)
+                respondEncodable(client, id: request.id, SessionResult(session: try handleSessionEnsure(params)))
             case .sessionAttach:
                 let params = try request.decodeParams(SessionAttachParams.self)
                 respondEncodable(client, id: request.id, try handleSessionAttach(params, client))
@@ -853,6 +947,24 @@ public final class Engine: @unchecked Sendable {
             case .workerRestore:
                 let params = try request.decodeParams(WorkerRestoreParams.self)
                 respondEncodable(client, id: request.id, try handleWorkerRestore(params, author: client.author))
+            case .workerAcquire:
+                let params = try request.decodeParams(WorkerAcquireParams.self)
+                respondEncodable(client, id: request.id, try handleWorkerAcquire(params, author: client.author))
+            case .delegationCreate:
+                let params = try request.decodeParams(DelegationCreateParams.self)
+                respondEncodable(client, id: request.id, try handleDelegationCreate(params, author: client.author))
+            case .delegationWait:
+                let params = try request.decodeParams(DelegationWaitParams.self)
+                handleDelegationWait(params, request: request, client: client)
+            case .delegationDone:
+                let params = try request.decodeParams(DelegationDoneParams.self)
+                respondEncodable(client, id: request.id, try handleDelegationDone(params, author: client.author))
+            case .delegationList:
+                let params = try request.decodeParams(DelegationListParams.self)
+                _ = try authorizeWorkspace(params.workspaceID, author: client.author)
+                let list = Array(delegations[params.workspaceID]?.values ?? Dictionary<ULID, Delegation>().values)
+                    .sorted { ($0.startedAt ?? .distantPast) < ($1.startedAt ?? .distantPast) }
+                respondEncodable(client, id: request.id, list)
             case .adapterList:
                 respondEncodable(client, id: request.id, registry.availability())
             case .subscribe:
@@ -1424,7 +1536,7 @@ public final class Engine: @unchecked Sendable {
                 id: roomID, name: "Sala local", ownerID: ownerID,
                 createdAt: now, updatedAt: now)
             let store = RoomStore(room: room)
-            try? store.addMember(id: ownerID, displayName: NSFullUserName(), roles: [.owner])
+            _ = try? store.addMember(id: ownerID, displayName: NSFullUserName(), roles: [.owner])
             roomStores[roomID] = store
             try? persistRoom(store)
         }
@@ -1744,6 +1856,293 @@ public final class Engine: @unchecked Sendable {
         return WorkerRestoreResult(session: session, journal: journal)
     }
 
+    private func handleWorkerAcquire(
+        _ params: WorkerAcquireParams,
+        author: Author,
+        excluding excludedNodeID: ULID? = nil
+    ) throws -> WorkerAcquireResult {
+        let state = try authorizeWorkspace(params.workspaceID, author: author)
+        guard !params.role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProtocolError(name: .invalid_params, message: "role do worker não pode ser vazio")
+        }
+        let candidates = state.nodes.values.compactMap { node -> TerminalNode? in
+            guard case .terminal(let terminal) = node,
+                  terminal.id != excludedNodeID,
+                  terminal.adapter.caseInsensitiveCompare(params.adapter) == .orderedSame,
+                  terminal.papel?.caseInsensitiveCompare(params.role) == .orderedSame else { return nil }
+            return terminal
+        }
+        let busyNodeIDs = Set(
+            (delegations[params.workspaceID]?.values ?? Dictionary<ULID, Delegation>().values)
+                .filter { !$0.estado.isTerminal }
+                .map(\.subagentNodeID)
+        )
+        let chosen: TerminalNode
+        let reused: Bool
+        if !params.newIdentity, let running = candidates.first(where: {
+            guard !busyNodeIDs.contains($0.id) else { return false }
+            guard let sid = nodeSessions[$0.id], let session = sessions[sid] else { return false }
+            return session.estado.isViva
+        }) {
+            chosen = running; reused = true
+        } else if !params.newIdentity, let parked = candidates.first(where: {
+            !busyNodeIDs.contains($0.id)
+                && !(nodeSessions[$0.id].flatMap { sessions[$0] }?.estado.isViva ?? false)
+        }) {
+            chosen = parked; reused = true
+        } else {
+            let base = "\(params.role)-worker"
+            let existing = Set(state.nodes.values.compactMap { if case .terminal(let t) = $0 { return t.nome.lowercased() }; return nil })
+            var name = base; var suffix = 2
+            while existing.contains(name.lowercased()) { name = "\(base)-\(suffix)"; suffix += 1 }
+            let node = TerminalNode(id: ULID.generate(), posicao: Ponto(x: 80, y: 80), tamanho: Tamanho(w: 640, h: 420), criadoEm: Date(), nome: name, papel: params.role, adapter: params.adapter, cwd: state.workspace.caminhoRaiz ?? FileManager.default.homeDirectoryForCurrentUser.path)
+            let proposal = DocOp(opID: ULID.generate(), author: author, ts: Date(), payload: .nodeAdd(NodeAddOpPayload(node: .terminal(node))))
+            guard let applied = try? state.applyProposal(proposal, liveNodeIDs: liveNodeIDs) else {
+                throw ProtocolError(name: .internal_error, message: "não foi possível criar o subagente")
+            }
+            broadcast(.documentOp, ws: params.workspaceID, DocumentOpTopicPayload(workspaceID: params.workspaceID, op: applied, seq: applied.seq ?? 0))
+            try? state.saveWorkspace()
+            chosen = node; reused = false
+        }
+        let session = try handleSessionEnsure(SessionEnsureParams(workspaceID: params.workspaceID, nodeID: chosen.id))
+        return WorkerAcquireResult(node: chosen, session: session, reused: reused)
+    }
+
+    private func persistDelegations(_ workspaceID: ULID) {
+        let values = Array(delegations[workspaceID]?.values ?? Dictionary<ULID, Delegation>().values)
+            .sorted { $0.id.string < $1.id.string }
+        try? AtomicJSON.write(values, to: paths.delegationsFile(workspaceID))
+    }
+
+    private static func readSemanticEvents(from url: URL) -> [SemanticEvent] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        return data.split(separator: 0x0A).compactMap { try? ColmeiaJSON.decoder().decode(SemanticEvent.self, from: Data($0)) }
+    }
+
+    private func recordSemanticEvent(_ event: SemanticEvent) {
+        semanticEvents[event.workspaceID, default: []].append(event)
+        let count = semanticEvents[event.workspaceID]?.count ?? 0
+        if count > 2_000 {
+            semanticEvents[event.workspaceID]?.removeFirst(count - 2_000)
+        }
+        guard let data = try? ColmeiaJSON.encoder().encode(event) else { return }
+        let url = paths.semanticEventsFile(event.workspaceID)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile(); handle.write(data); handle.write(Data([0x0A])); try? handle.close()
+        } else {
+            var line = data
+            line.append(0x0A)
+            try? line.write(to: url, options: Data.WritingOptions.atomic)
+        }
+    }
+
+    private func handleDelegationCreate(_ params: DelegationCreateParams, author: Author) throws -> DelegationResult {
+        let state = try authorizeWorkspace(params.workspaceID, author: author)
+        guard state.terminalNode(params.principalNodeID) != nil else {
+            throw ProtocolError(name: .node_not_found, message: "principal não existe")
+        }
+        let acquired = try handleWorkerAcquire(
+            WorkerAcquireParams(
+                workspaceID: params.workspaceID, role: params.role,
+                adapter: params.adapter, newIdentity: params.newIdentity),
+            author: author,
+            excluding: params.principalNodeID)
+        let principalSession = nodeSessions[params.principalNodeID].flatMap { sessions[$0] }
+        let delegation = Delegation(
+            workspaceID: params.workspaceID,
+            principalNodeID: params.principalNodeID,
+            subagentNodeID: acquired.node.id,
+            task: params.task,
+            principalSessionID: principalSession?.id,
+            subagentSessionID: acquired.session.id,
+            estado: .running,
+            startedAt: Date())
+        delegations[params.workspaceID, default: [:]][delegation.id] = delegation
+        persistDelegations(params.workspaceID)
+        recordSemanticEvent(SemanticEvent(
+            workspaceID: params.workspaceID, sessionID: acquired.session.id,
+            nodeID: acquired.node.id, kind: .delegationStarted, text: params.task,
+            metadata: [
+                "delegation_id": delegation.id.string,
+                "principal_node_id": params.principalNodeID.string
+            ]))
+
+        let completionCommand =
+            "colmeia done --delegation \(delegation.id.string) --status completed --summary \"<short result>\""
+        let prompt = """
+        Delegation \(delegation.id.string) from your primary agent:
+        \(params.task)
+
+        Complete the task, then report it exactly once with:
+        \(completionCommand)
+        """
+        if let child = sessions[acquired.session.id] {
+            sessionInput(
+                child, data: Data(prompt.utf8),
+                author: .agente(params.principalNodeID.string), terminalInput: false)
+            stateQueue.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self, weak child] in
+                guard let self, let child, child.estado.isViva else { return }
+                self.sessionInput(
+                    child, data: Data([0x0D]),
+                    author: .agente(params.principalNodeID.string), terminalInput: false)
+            }
+        }
+        return DelegationResult(delegation: delegation)
+    }
+
+    private func handleDelegationWait(
+        _ params: DelegationWaitParams,
+        request: RequestMessage,
+        client: ClientConnection
+    ) {
+        guard let delegation = delegations.values.compactMap({ $0[params.delegationID] }).first else {
+            client.respond(
+                id: request.id,
+                error: ProtocolError(name: .invalid_params, message: "delegação não existe"))
+            return
+        }
+        do {
+            _ = try authorizeWorkspace(delegation.workspaceID, author: client.author)
+        } catch let error as ProtocolError {
+            client.respond(id: request.id, error: error)
+            return
+        } catch {
+            client.respond(
+                id: request.id,
+                error: ProtocolError(name: .internal_error, message: "\(error)"))
+            return
+        }
+        if delegation.estado.isTerminal {
+            respondEncodable(client, id: request.id, DelegationResult(delegation: delegation))
+            return
+        }
+        delegationWaiters[delegation.id, default: []].append { [weak client] completed in
+            client?.respond(
+                id: request.id,
+                result: (try? JSONValue(encoding: DelegationResult(delegation: completed)))
+                    ?? .object([:]))
+        }
+    }
+
+    private func handleDelegationDone(_ params: DelegationDoneParams, author: Author) throws -> DelegationResult {
+        guard let current = delegations.values.compactMap({ $0[params.delegationID] }).first else { throw ProtocolError(name: .invalid_params, message: "delegação não existe") }
+        guard case .agente(let nodeRaw) = author, ULID(nodeRaw) == current.subagentNodeID else { throw ProtocolError(name: .invalid_params, message: "somente o subagente pode concluir esta delegação") }
+        guard params.status.isTerminal else {
+            throw ProtocolError(name: .invalid_params, message: "status final inválido: \(params.status.rawValue)")
+        }
+        if current.estado.isTerminal {
+            guard current.estado == params.status,
+                  current.result == params.result,
+                  current.deliveryID == params.deliveryID else {
+                throw ProtocolError(
+                    name: .invalid_params,
+                    message: "delegação já concluída com outro resultado")
+            }
+            return DelegationResult(delegation: current)
+        }
+        var updated = current
+        updated.estado = params.status
+        updated.result = params.result
+        updated.deliveryID = params.deliveryID
+        updated.completedAt = Date()
+        delegations[updated.workspaceID]?[updated.id] = updated
+        persistDelegations(updated.workspaceID)
+        recordSemanticEvent(SemanticEvent(
+            workspaceID: updated.workspaceID, sessionID: updated.subagentSessionID,
+            nodeID: updated.subagentNodeID, kind: .delegationCompleted,
+            text: updated.result,
+            metadata: [
+                "delegation_id": updated.id.string,
+                "status": updated.estado.rawValue
+            ]))
+        if let sessionID = updated.subagentSessionID,
+           let child = sessions[sessionID],
+           let pty = child.pty {
+            terminateGracefully(child, pty: pty)
+            notifyDelegationWaitersAfterParking(
+                updated, sessionID: sessionID,
+                deadline: Date().addingTimeInterval(4))
+        } else {
+            notifyDelegationWaiters(updated)
+        }
+        return DelegationResult(delegation: updated)
+    }
+
+    private func notifyDelegationWaiters(_ delegation: Delegation) {
+        let waiters = delegationWaiters.removeValue(forKey: delegation.id) ?? []
+        waiters.forEach { $0(delegation) }
+    }
+
+    private func notifyDelegationWaitersAfterParking(
+        _ delegation: Delegation,
+        sessionID: ULID,
+        deadline: Date
+    ) {
+        if sessions[sessionID]?.estado.isViva != true || Date() >= deadline {
+            notifyDelegationWaiters(delegation)
+            return
+        }
+        stateQueue.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+            self?.notifyDelegationWaitersAfterParking(
+                delegation, sessionID: sessionID, deadline: deadline)
+        }
+    }
+
+    /// Relações ativas sobrevivem ao processo do engine. Cada subagente retoma
+    /// sua casa Codex isolada e recebe um lembrete da mesma delegação, nunca uma
+    /// identidade nova.
+    private func recoverActiveDelegations() {
+        for workspaceID in Array(delegations.keys) {
+            let active = delegations[workspaceID]?.values.filter {
+                !$0.estado.isTerminal
+            } ?? []
+            for current in active {
+                do {
+                    let session = try handleSessionEnsure(SessionEnsureParams(
+                        workspaceID: workspaceID,
+                        nodeID: current.subagentNodeID))
+                    var updated = current
+                    updated.subagentSessionID = session.id
+                    // O pedido antigo de aprovação morreu com o PTY; a conversa
+                    // retomada poderá pedi-lo novamente de forma íntegra.
+                    updated.pendingApprovalID = nil
+                    if updated.estado == .waitingApproval {
+                        updated.estado = .running
+                    }
+                    delegations[workspaceID]?[updated.id] = updated
+                    persistDelegations(workspaceID)
+                    guard let child = sessions[session.id] else { continue }
+                    let reminder = """
+                    Resume delegation \(updated.id.string) after the Colmeia engine restarted.
+                    Task: \(updated.task)
+                    Continue from your preserved context. When complete, run:
+                    colmeia done --delegation \(updated.id.string) --status completed --summary "<short result>"
+                    """
+                    stateQueue.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self, weak child] in
+                        guard let self, let child, child.estado.isViva else { return }
+                        self.sessionInput(
+                            child, data: Data(reminder.utf8),
+                            author: .agente(updated.principalNodeID.string),
+                            terminalInput: false)
+                        self.stateQueue.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self, weak child] in
+                            guard let self, let child, child.estado.isViva else { return }
+                            self.sessionInput(
+                                child, data: Data([0x0D]),
+                                author: .agente(updated.principalNodeID.string),
+                                terminalInput: false)
+                        }
+                    }
+                } catch {
+                    log.warn(
+                        "delegation_recovery_failed",
+                        "\(current.id.string): \(error)",
+                        workspaceID: workspaceID)
+                }
+            }
+        }
+    }
+
     private func contentProtocolError(_ error: Error) -> ProtocolError {
         ProtocolError(name: .invalid_params, message: (error as? LocalizedError)?.errorDescription ?? "\(error)")
     }
@@ -1834,10 +2233,22 @@ public final class Engine: @unchecked Sendable {
         guard let adapter = registry.find(node.adapter) else {
             throw ProtocolError(name: .adapter_not_found, message: "adapter \(node.adapter) não registrado")
         }
+        let codexHome: URL?
+        if node.adapter == "codex" {
+            codexHome = try CodexAgentHome.prepare(
+                paths: paths,
+                workspaceID: params.workspaceID,
+                nodeID: node.id,
+                inheritedEnvironment: baseEnvironment)
+        } else {
+            codexHome = nil
+        }
         let plan = adapter.launch(LaunchConfig(
             node: node, workspace: state.workspace,
             conexoes: vizinhosDeConversa(de: node.id, em: state),
-            memoria: memoryStore(params.workspaceID).briefing()))
+            memoria: memoryStore(params.workspaceID).briefing(),
+            retomarSessao: codexHome.map(CodexAgentHome.hasSession(in:)) ?? false,
+            modelo: node.modelo))
         var executable = plan.executavel
         var args = plan.args
         if let override = node.comandoOverride, !override.isEmpty {
@@ -1863,6 +2274,7 @@ public final class Engine: @unchecked Sendable {
         env[ColmeiaEnv.sessionID] = sessionID.string
         env[ColmeiaEnv.nodeID] = node.id.string
         env[ColmeiaEnv.workspaceID] = state.workspace.id.string
+        if let codexHome { env["CODEX_HOME"] = codexHome.path }
         env["TERM"] = "xterm-256color"
         env["PATH"] = ([cliDirectory] + executableSearchPath(environment: env))
             .joined(separator: ":")
@@ -1913,6 +2325,22 @@ public final class Engine: @unchecked Sendable {
         startReader(live)
         log.info("session_start", "\(node.nome) (\(node.adapter))", sessionID: sessionID, workspaceID: params.workspaceID)
         return live.dto()
+    }
+
+    private func handleSessionEnsure(_ params: SessionEnsureParams) throws -> Session {
+        let state = try requireWorkspace(params.workspaceID)
+        guard state.terminalNode(params.nodeID) != nil else {
+            throw ProtocolError(name: .node_not_found, message: "TerminalNode \(params.nodeID) não existe")
+        }
+        if let sid = nodeSessions[params.nodeID], let live = sessions[sid], live.estado.isViva {
+            return live.dto()
+        }
+        return try handleSessionStart(SessionStartParams(
+            workspaceID: params.workspaceID,
+            nodeID: params.nodeID,
+            floorID: params.floorID,
+            cols: params.cols,
+            rows: params.rows))
     }
 
     private func startReader(_ live: LiveSession) {
@@ -2163,11 +2591,14 @@ public final class Engine: @unchecked Sendable {
             id: ULID.generate(), sessionID: session.id, nodeNome: session.nodeNome,
             resumo: draft.resumo, opcoes: draft.opcoes, estado: .pendente, criadaEm: Date())
         approvals[approval.id] = approval
+        updateDelegationApproval(
+            sessionID: session.id, approvalID: approval.id, waiting: true)
         session.pendingApprovalID = approval.id
         session.inputSincePendingApproval = false
         session.journal.append(
             .approval(ApprovalEventPayload(approvalID: approval.id, acao: .criada)), author: .sistema)
         broadcast(.approvalCreated, ws: session.workspaceID, ApprovalTopicPayload(approval: approval))
+        recordSemanticEvent(SemanticEvent(workspaceID: session.workspaceID, sessionID: session.id, nodeID: session.nodeID, kind: .approvalRequested, text: approval.resumo, metadata: ["approval_id": approval.id.string]))
         transition(session, to: .aprovacaoPendente, motivo: "approval_detectada")
     }
 
@@ -2183,6 +2614,8 @@ public final class Engine: @unchecked Sendable {
             approval.resolvidaPor = .humanoLocal
         }
         approvals[pendingID] = approval
+        updateDelegationApproval(
+            sessionID: session.id, approvalID: pendingID, waiting: false)
         session.journal.append(
             .approval(ApprovalEventPayload(approvalID: pendingID, acao: .resolvida)), author: .sistema)
         broadcast(.approvalResolved, ws: session.workspaceID, ApprovalTopicPayload(approval: approval))
@@ -2213,6 +2646,8 @@ public final class Engine: @unchecked Sendable {
         approval.resolvidaEm = Date()
         approval.resolvidaPor = author
         approvals[approval.id] = approval
+        updateDelegationApproval(
+            sessionID: live.id, approvalID: approval.id, waiting: false)
         live.pendingApprovalID = nil
         live.inputSincePendingApproval = false
         live.journal.append(
@@ -2223,6 +2658,30 @@ public final class Engine: @unchecked Sendable {
             transition(live, to: .rodando, motivo: "approval_resolvida")
         }
         return approval
+    }
+
+    private func updateDelegationApproval(
+        sessionID: ULID,
+        approvalID: ULID,
+        waiting: Bool
+    ) {
+        for workspaceID in Array(delegations.keys) {
+            guard let match = delegations[workspaceID]?.values.first(where: {
+                $0.subagentSessionID == sessionID && !$0.estado.isTerminal
+            }) else { continue }
+            var updated = match
+            if waiting {
+                updated.estado = .waitingApproval
+                updated.pendingApprovalID = approvalID
+            } else if updated.pendingApprovalID == approvalID {
+                updated.estado = .running
+                updated.pendingApprovalID = nil
+            } else {
+                continue
+            }
+            delegations[workspaceID]?[updated.id] = updated
+            persistDelegations(workspaceID)
+        }
     }
 
     // MARK: - Mensageria (§14)
@@ -2323,6 +2782,7 @@ public final class Engine: @unchecked Sendable {
         sessionInput(dest, data: Data((message.texto + "\r").utf8), author: .agente(message.deNode.string), terminalInput: false)
         broadcast(.messageDelivered, ws: dest.workspaceID, MessageDeliveredTopicPayload(
             de: message.deNode, para: dest.nodeID, texto: message.texto, messageID: message.id))
+        recordSemanticEvent(SemanticEvent(workspaceID: dest.workspaceID, sessionID: dest.id, nodeID: dest.nodeID, kind: .userMessage, text: message.texto, metadata: ["from_node_id": message.deNode.string, "message_id": message.id.string]))
         ensureConversaConnection(ws: dest.workspaceID, entre: message.deNode, e: dest.nodeID)
     }
 
@@ -2337,6 +2797,7 @@ public final class Engine: @unchecked Sendable {
         guard let wait = blockingWaits[session.id], wait.delivered, wait.sawOutput else { return }
         let resposta = TerminalText.stripANSI(TerminalText.decodeLossy(wait.accum))
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        recordSemanticEvent(SemanticEvent(workspaceID: session.workspaceID, sessionID: session.id, nodeID: session.nodeID, kind: .assistantMessage, text: resposta, metadata: ["reply_to": wait.messageID.string]))
         finishWait(wait, extra: ["resposta": .string(resposta)])
     }
 
@@ -2408,12 +2869,12 @@ public final class Engine: @unchecked Sendable {
                     var detalhe = outro.adapter
                     if let papel = outro.papel, !papel.isEmpty { detalhe += ", papel \(papel)" }
                     texto = "[colmeia] conectado ao nó \"\(outro.nome)\" (\(detalhe)). "
-                        + "Delegue tarefas com: colmeia ask \"\(outro.nome)\" \"<tarefa>\" (--no-wait para não esperar a resposta)"
+                        + "Use o mecanismo de descoberta de comandos do terminal para delegar tarefas."
                 }
             case .escritaDeNota:
                 texto = removida
                     ? "[colmeia] nota desconectada do seu nó."
-                    : "[colmeia] nota conectada ao seu nó — escreva nela com: colmeia note \"<texto>\""
+                    : "[colmeia] nota conectada ao seu nó — use a integração local para escrever nela."
                 // A capacidade continua auditável sem virar uma mensagem digitada
                 // dentro do terminal. O briefing de launch já descreve a CLI.
                 live.journal.append(

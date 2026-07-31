@@ -206,13 +206,22 @@ enum NodesCommand {
                 ts: Date(),
                 payload: .nodeAdd(NodeAddOpPayload(node: .terminal(node)))
             )
+            // The parent node is known to this managed CLI session. Persist the
+            // conversation edge with the child creation, rather than depending
+            // solely on the engine to infer it from the socket author.
+            let connection = Connection(
+                id: ULID.generate(), de: identity.nodeID, para: node.id,
+                semantica: .conversa, estilo: .tracejada)
+            let connectionOp = DocOp(
+                opID: ULID.generate(), author: context.author, ts: Date(),
+                payload: .connectionAdd(ConnectionAddOpPayload(connection: connection)))
             _ = try await racedCall(
                 client: client, watchdogSeconds: 30,
                 expiry: CLIFailure(code: CLIExit.contexto, message: "engine não respondeu ao criar terminal em 30s")
             ) {
                 try await client.call(
                     .docApply,
-                    params: DocApplyParams(workspaceID: identity.workspaceID, ops: [op]),
+                    params: DocApplyParams(workspaceID: identity.workspaceID, ops: [op, connectionOp]),
                     expecting: DocApplyResult.self)
             }
 

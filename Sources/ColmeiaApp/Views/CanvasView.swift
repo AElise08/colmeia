@@ -75,6 +75,9 @@ struct CanvasView: View {
                     }
                 ConnectionsLayer()
                 nodeLayer
+                if store.canvasViewMode == .atencao {
+                    attentionOverlay
+                }
                 RemotePresenceLayer()
                 if store.ferramentaDesenho != nil {
                     DrawingLayer()
@@ -173,6 +176,44 @@ struct CanvasView: View {
             .opacity(store.floorOpacity(for: node.id))
             .allowsHitTesting(store.floorOpacity(for: node.id) >= 0.99)
         }
+    }
+
+    private var attentionOverlay: some View {
+        let agentCount = store.nodes.values.filter {
+            store.nodeIsVisibleOnActiveFloor($0.id) && store.matchesCanvasViewMode($0)
+        }.count
+        let otherCount = store.pendingApprovals.count
+            + store.openDecisions.count
+            + store.deliveries.filter { $0.estado == .proposed || $0.estado == .reopened }.count
+        let count = agentCount + otherCount
+        return VStack {
+            Spacer()
+            HStack(spacing: 9) {
+                Image(systemName: count == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(count == 0 ? Color.green : Color.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(count == 0 ? "Nothing needs attention" : "\(count) agent\(count == 1 ? "" : "s") need attention")
+                        .font(.caption.weight(.semibold))
+                    Text(count == 0
+                         ? "Approvals, human input, and review requests will appear here."
+                         : "These agents are waiting for approval or human input.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button("Agora") {
+                    NotificationCenter.default.post(name: .colmeiaShowNow, object: nil)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.quaternary, lineWidth: 1))
+            .shadow(color: .black.opacity(0.12), radius: 14, y: 5)
+            .padding(16)
+        }
+        .allowsHitTesting(true)
     }
 
     // MARK: - Gestos

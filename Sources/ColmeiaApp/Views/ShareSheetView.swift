@@ -11,6 +11,7 @@ struct ShareSheetView: View {
     @State private var ttl: InviteTTL = .day
     @State private var invites: [InviteToken] = []
     @State private var createdLink: String?
+    @State private var createdToken: String?
     @State private var erro: String?
     @State private var carregando = false
 
@@ -43,6 +44,21 @@ struct ShareSheetView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    GroupBox("Como a outra pessoa entra") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            instructionRow("1", "Gere um convite com o papel de Visualizador ou Editor.")
+                            instructionRow("2", "Copie o link e envie para a pessoa.")
+                            instructionRow("3", "Ela abre o link no Chrome e entra na sala sem instalar o app.")
+                            Text(isLocalHub
+                                 ? "Atenção: este Hub está em localhost. Esse link só funciona nesta máquina; para outra pessoa, use um endereço de Hub acessível pela rede/Internet."
+                                 : "O link usa o endereço do Hub atual. A pessoa precisa conseguir alcançá-lo pela rede.")
+                                .font(.caption)
+                                .foregroundStyle(isLocalHub ? Color.orange : Color.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(8)
+                    }
+
                     GroupBox("Criar Convite") {
                         VStack(spacing: 8) {
                             Picker("Papel", selection: $role) {
@@ -65,13 +81,19 @@ struct ShareSheetView: View {
                             .disabled(carregando)
 
                             if let link = createdLink {
-                                HStack {
-                                    Text(link).font(.caption.monospaced()).lineLimit(1)
-                                    Button("Copiar") {
-                                        NSPasteboard.general.clearContents()
-                                        NSPasteboard.general.setString(link, forType: .string)
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(link)
+                                        .font(.caption.monospaced())
+                                        .textSelection(.enabled)
+                                        .lineLimit(2)
+                                    HStack {
+                                        Button("Copiar link") { copiar(link) }
+                                            .buttonStyle(.bordered)
+                                        if let createdToken {
+                                            Button("Copiar comando CLI") { copiar(cliCommand(token: createdToken)) }
+                                                .buttonStyle(.bordered)
+                                        }
                                     }
-                                    .buttonStyle(.bordered)
                                 }
                                 .padding(8)
                                 .background(Color.secondary.opacity(0.1))
@@ -79,6 +101,25 @@ struct ShareSheetView: View {
                             }
                         }
                         .padding(8)
+                    }
+
+                    if let createdToken {
+                        GroupBox("Acesso pelo CLI") {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text("Para entrar pelo terminal, use:")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(cliCommand(token: createdToken))
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text("O CLI entra na sala e acessa o snapshot/eventos. Para usar o canvas visual e o portal do Canva, o link do Chrome é o caminho certo.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(8)
+                        }
                     }
 
                     GroupBox("Convites Ativos") {
@@ -132,7 +173,7 @@ struct ShareSheetView: View {
                 .padding(.horizontal)
             }
         }
-        .frame(width: 420, height: 480)
+        .frame(width: 470, height: 650)
         .task { await carregar() }
     }
 
@@ -146,6 +187,32 @@ struct ShareSheetView: View {
         if invite.used { return .gray }
         if invite.isExpired { return .orange }
         return .green
+    }
+
+    private var isLocalHub: Bool {
+        hubURL.contains("127.0.0.1") || hubURL.contains("localhost")
+    }
+
+    private func instructionRow(_ number: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(number)
+                .font(.caption.bold())
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .background(Color.accentColor, in: Circle())
+            Text(text)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func cliCommand(token: String) -> String {
+        "colmeia room join \(room.id.string) --token \(token) --hub \(hubURL)"
+    }
+
+    private func copiar(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
     }
 
     private func hostBase() -> String {
@@ -166,6 +233,7 @@ struct ShareSheetView: View {
                 params: MemberInviteParams(roomID: room.id, displayName: "Convidado", roles: [role], ttlSeconds: ttl.seconds),
                 expecting: MemberInviteResult.self)
             createdLink = "\(hostBase())/join/\(room.id.string)/\(res.inviteToken)"
+            createdToken = res.inviteToken
             try? await Task.sleep(nanoseconds: 500_000_000)
             await carregar()
         } catch {

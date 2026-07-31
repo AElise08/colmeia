@@ -35,6 +35,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var nodes: [ULID: Node] = [:]
     @Published private(set) var connections: [ULID: Connection] = [:]
     @Published private(set) var approvals: [Approval] = []
+    @Published private(set) var delegations: [Delegation] = []
     @Published private(set) var routines: [Routine] = []
     /// Estado operacional adicional, sempre espelhado por chamadas/eventos do engine.
     @Published private(set) var memory = WorkspaceMemory()
@@ -122,6 +123,18 @@ final class AppStore: ObservableObject {
         terminalControllers.first { $0.value.sessionID == sessionID }?.key
     }
 
+    func delegation(for approval: Approval) -> Delegation? {
+        delegations.first {
+            $0.pendingApprovalID == approval.id
+                || ($0.subagentSessionID == approval.sessionID && !$0.estado.isTerminal)
+        }
+    }
+
+    func terminalName(_ nodeID: ULID) -> String? {
+        guard case .terminal(let terminal) = nodes[nodeID] else { return nil }
+        return terminal.nome
+    }
+
     /// §6.3 — aplica visão derivada sobre o conjunto de nós.
     func matchesCanvasViewMode(_ node: Node) -> Bool {
         switch canvasViewMode {
@@ -131,12 +144,13 @@ final class AppStore: ObservableObject {
             if case .terminal = node { return true }
             return false
         case .atencao:
-            if case .terminal = node, let id = node.id as ULID?,
-               let sessionID = terminalControllers[id]?.sessionID,
-               pendingApprovals.contains(where: { $0.sessionID == sessionID }) {
+            guard case .terminal = node else { return false }
+            let controller = terminalControllers[node.id]
+            if controller?.estado == .esperandoHumano || controller?.estado == .aprovacaoPendente {
                 return true
             }
-            return false
+            guard let sessionID = controller?.sessionID else { return false }
+            return pendingApprovals.contains(where: { $0.sessionID == sessionID })
         }
     }
 
@@ -261,6 +275,7 @@ final class AppStore: ObservableObject {
             watchdogAlerts = []
             workerArchives = []
             agentMessages = []
+            delegations = []
 
             workspace = result.workspace
             if restoreViewport {
@@ -276,6 +291,7 @@ final class AppStore: ObservableObject {
             )
             await reattachSessions()
             await refreshApprovals()
+            await refreshDelegations()
             await refreshRoutines()
             await refreshFloors()
             await refreshOperationalState()
@@ -287,6 +303,19 @@ final class AppStore: ObservableObject {
     func renameWorkspace(_ nome: String) {
         guard workspace != nil else { return }
         perform(.workspaceRename(WorkspaceRenameOpPayload(nome: nome)))
+    }
+
+    func setPrimaryAgent(_ nodeID: ULID) async {
+        guard let ws = workspace else { return }
+        do {
+            let result = try await connection.call(
+                .workspaceUpdate,
+                params: WorkspaceUpdateParams(id: ws.id, primaryNodeID: nodeID),
+                expecting: WorkspaceResult.self)
+            workspace = result.workspace
+        } catch {
+            report(error, "workspace.primary")
+        }
     }
 
     /// Reabrir a UI com sessões vivas DEVE reconectar todos os terminais (§8.4).
@@ -325,6 +354,15 @@ final class AppStore: ObservableObject {
             .approvalList,
             params: ApprovalListParams(workspaceID: ws.id),
             expecting: ApprovalListResult.self
+        )) ?? []
+    }
+
+    private func refreshDelegations() async {
+        guard let ws = workspace else { return }
+        delegations = (try? await connection.call(
+            .delegationList,
+            params: DelegationListParams(workspaceID: ws.id),
+            expecting: [Delegation].self
         )) ?? []
     }
 
@@ -1273,6 +1311,94 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Troca o adapter/modelo do mesmo agente sem criar outro nó. A sessão antiga
+    /// é encerrada, o nó conserva identidade, papel, conexões e workspace, e a
+    /// atividade recente é enviada como handoff para o novo adapter.
+    func switchAgentAdapter(nodeID: ULID, to adapter: String) async {
+        guard let ws = workspace,
+              case .terminal(let terminal)? = nodes[nodeID] else { return }
+        guard terminal.adapter != adapter else { return }
+        guard adapterPodeSerSelecionado(adapter) else {
+            aviso(motivoAdapterIndisponivel(adapter))
+            return
+        }
+
+        let controller = terminalController(for: nodeID)
+        let atividadeRecente = controller.linhasRecentes.suffix(8).joined(separator: "\n")
+        if controller.viva {
+            guard await controller.killAndWait() else {
+                aviso("O agente ainda está encerrando. Tente trocar o modelo novamente em instantes.")
+                return
+            }
+        }
+
+        do {
+            let campos: JSONValue = .object(["adapter": .string(adapter), "modelo": .null])
+            try await performManyAguardando([
+                .nodeUpdate(NodeUpdateOpPayload(id: nodeID, campos: campos))
+            ], undoable: false)
+
+            let floorID = floors.first {
+                $0.estado == .ativo && $0.nos.contains(nodeID)
+            }?.id
+            try await controller.start(workspaceID: ws.id, floorID: floorID)
+
+            if adapter != KnownAdapter.shell.rawValue {
+                let contexto = atividadeRecente.isEmpty ? "(sem saída recente registrada)" : atividadeRecente
+                controller.sendCommand("""
+                You are taking over an existing Colmeia agent session.
+                Keep the same identity, workspace, role, files, and task context. Continue from the recent activity below; do not restart the project or repeat completed work.
+                Previous adapter: \(terminal.adapter)
+                Agent: \(terminal.nome)
+                Role: \(terminal.papel ?? "not specified")
+                Recent activity:
+                \(contexto)
+                Acknowledge the handoff briefly, then wait for the next instruction.
+                """)
+            }
+            avisoInfo = "\(terminal.nome) agora usa \(adapter). O contexto recente foi enviado como handoff."
+        } catch {
+            report(error, "agent.adapter.switch")
+        }
+    }
+
+    /// Altera o modelo dentro do mesmo runtime. Para o Codex, a retomada usa a
+    /// sessão isolada do agente, mantendo a conversa; só o modelo do próximo
+    /// turno muda.
+    func switchAgentModel(nodeID: ULID, to modelo: String?) async {
+        guard let ws = workspace,
+              case .terminal(let terminal)? = nodes[nodeID] else { return }
+        guard terminal.adapter == KnownAdapter.codex.rawValue else {
+            aviso("A seleção de modelo no Agent Chat está disponível para Codex.")
+            return
+        }
+        let normalized = modelo?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelFinal = normalized?.isEmpty == true ? nil : normalized
+        guard terminal.modelo != modelFinal else { return }
+
+        let controller = terminalController(for: nodeID)
+        if controller.viva {
+            let didStop = await controller.killAndWait()
+            if !didStop {
+                aviso("O agente ainda está encerrando. Tente mudar o modelo novamente em instantes.")
+                return
+            }
+        }
+        do {
+            let campos = try JSONValue(encoding: ["modelo": modelFinal])
+            try await performManyAguardando([
+                .nodeUpdate(NodeUpdateOpPayload(id: nodeID, campos: campos))
+            ], undoable: false)
+            let floorID = floors.first {
+                $0.estado == .ativo && $0.nos.contains(nodeID)
+            }?.id
+            try await controller.start(workspaceID: ws.id, floorID: floorID)
+            avisoInfo = "\(terminal.nome) agora usa \(modelFinal ?? "o modelo padrão do Codex"). A conversa do agente foi retomada."
+        } catch {
+            report(error, "agent.model.switch")
+        }
+    }
+
     private func nextZ() -> Int {
         (nodes.values.map(\.z).max() ?? 0) + 1
     }
@@ -1485,8 +1611,9 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func createFloor(nome: String, branch: String?) async {
-        guard let ws = workspace else { return }
+    @discardableResult
+    func createFloor(nome: String, branch: String?) async -> Bool {
+        guard let ws = workspace else { return false }
         do {
             let result = try await connection.call(
                 .floorCreate,
@@ -1494,14 +1621,16 @@ final class AppStore: ObservableObject {
                 expecting: FloorResult.self
             )
             floors.append(result.floor)
-            await switchFloor(result.floor)
+            return await switchFloor(result.floor)
         } catch {
             report(error, "floor.create")
+            return false
         }
     }
 
-    func switchFloor(_ floor: Floor?) async {
-        guard let ws = workspace else { return }
+    @discardableResult
+    func switchFloor(_ floor: Floor?) async -> Bool {
+        guard let ws = workspace else { return false }
         viewportTask?.cancel()
         viewportTask = nil
         let viewportSaindo = viewport
@@ -1518,8 +1647,10 @@ final class AppStore: ObservableObject {
             // Atribuição direta: o engine acabou de persistir o contexto anterior;
             // não agendar uma escrita do viewport restaurado no contexto novo.
             viewport = result.floor?.viewport ?? ws.viewport
+            return true
         } catch {
             report(error, "floor.switch")
+            return false
         }
     }
 
@@ -1630,6 +1761,7 @@ final class AppStore: ObservableObject {
         case .approvalCreated:
             guard let payload = try? event.decodeParams(ApprovalTopicPayload.self) else { return }
             upsert(approval: payload.approval)
+            Task { await refreshDelegations() }
             let nodeID = node(bySession: payload.approval.sessionID)
             notifications.notifyAprovacao(
                 payload.approval,
@@ -1638,6 +1770,7 @@ final class AppStore: ObservableObject {
         case .approvalResolved:
             guard let payload = try? event.decodeParams(ApprovalTopicPayload.self) else { return }
             upsert(approval: payload.approval)
+            Task { await refreshDelegations() }
         case .noteAppended:
             guard let payload = try? event.decodeParams(NoteAppendedTopicPayload.self) else { return }
             notaControllers[payload.nodeID]?.reloadFromDisk()

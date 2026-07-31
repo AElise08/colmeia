@@ -61,6 +61,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
+		<!-- Hub remoto em ws:// (não-TLS) é o transporte padrão do colmeia-hub
+		     em alpha; sem isto a UI fica eternamente em "Reconectando ao Hub"
+		     enquanto o colmeia-sync (socket TCP cru) continua funcionando. -->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
 	</dict>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>

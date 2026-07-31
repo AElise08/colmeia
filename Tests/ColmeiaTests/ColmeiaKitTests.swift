@@ -96,7 +96,7 @@ struct ProtocolTests {
 
     @Test func inventarioDeMetodos() {
         // 88 base multiplayer + 20 mission model (mission/workstream/decision/relation)
-        #expect(ColmeiaMethod.allCases.count == 121)
+        #expect(ColmeiaMethod.allCases.count == 127)
         #expect(ColmeiaMethod(rawValue: "routine.run_now") == .routineRunNow)
         #expect(ColmeiaMethod(rawValue: "doc.apply") == .docApply)
         #expect(ColmeiaMethod(rawValue: "portal.open") == .portalOpen)
@@ -107,6 +107,29 @@ struct ProtocolTests {
         #expect(ColmeiaMethod(rawValue: "workstream.briefing") == .workstreamBriefing)
         #expect(ColmeiaMethod(rawValue: "decision.decide") == .decisionDecide)
         #expect(ColmeiaMethod(rawValue: "relation.add") == .relationAdd)
+    }
+
+    @Test func estadosFinaisDeDelegacaoSaoExplicitos() {
+        #expect(!DelegationEstado.queued.isTerminal)
+        #expect(!DelegationEstado.running.isTerminal)
+        #expect(!DelegationEstado.waitingApproval.isTerminal)
+        #expect(DelegationEstado.completed.isTerminal)
+        #expect(DelegationEstado.failed.isTerminal)
+        #expect(DelegationEstado.canceled.isTerminal)
+    }
+
+    @Test func membroLegadoPreservaPapelSingular() throws {
+        let data = Data(
+            #"{"id":"legacy","display_name":"Legacy","role":"owner","status":"active","joined_at":"2026-07-25T00:03:23.634Z"}"#.utf8)
+        let member = try ColmeiaJSON.decoder().decode(Member.self, from: data)
+        #expect(member.roles == [.owner])
+    }
+
+    @Test func membroLegadoConverteObserverParaViewer() throws {
+        let data = Data(
+            #"{"id":"legacy","roles":["observer"],"status":"active","joined_at":"2026-07-25T00:03:23.634Z"}"#.utf8)
+        let member = try ColmeiaJSON.decoder().decode(Member.self, from: data)
+        #expect(member.roles == [.viewer])
     }
 
     @Test func topicos() {

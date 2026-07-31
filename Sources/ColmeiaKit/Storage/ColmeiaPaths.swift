@@ -113,6 +113,14 @@ public struct ColmeiaPaths: Sendable {
         workerArchiveDir(workspaceID).appendingPathComponent("workers.json")
     }
 
+    public func delegationsFile(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("delegations.json")
+    }
+
+    public func semanticEventsFile(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("semantic-events.jsonl")
+    }
+
     // MARK: - Multiplayer
 
     public func roomDir(_ roomID: ULID) -> URL {

@@ -16,6 +16,13 @@
 > Status: alpha. Colmeia is usable for local experimentation, but its protocol,
 > storage layout, and collaboration UX may still change.
 
+## Demo
+
+See Colmeia in action: [download or open the demo video](docs/media/democolmeia.mov).
+
+The demo shows the visual canvas, agent workspace, shared access flow, and the
+conversation view for coordinating work without losing the project context.
+
 ---
 
 <a id="portugues"></a>
@@ -153,12 +160,33 @@ como a versão oficial do projeto.
 <a id="english"></a>
 ## English
 
-### What It Is
+### What is Colmeia?
 
-Colmeia is a local-first visual workspace for coordinating technical work across
-people and AI agents. It puts terminals, notes, connections, web portals,
-missions, decisions, and deliveries in one spatial workspace instead of
-scattering context across windows and chat threads.
+Colmeia is a local-first visual workspace for people and AI agents. Think of it
+as a **Figma for AI agents**: your project is a spatial canvas, while agents can
+research, write, review, operate tools, and prepare work for that canvas.
+
+Instead of losing context between terminals, chat threads, browser tabs, and
+notes, Colmeia keeps the work connected. You can move between the canvas and an
+agent coordination room, see which agent is primary, switch models without
+discarding the conversation, and return to the project when the work is ready.
+
+### Why it is useful
+
+- **One project context.** Terminals, Markdown notes, agents, portals,
+  connections, missions, decisions, and deliveries live together.
+- **Clear agent roles.** A workspace has a persistent primary agent. Delegated
+  workers can be reused, parked, and resumed without creating duplicate
+  identities or losing their history.
+- **Readable conversations.** Agent Chat shows human messages, real assistant
+  replies, tool activity, delegations, approvals, and status cards. Raw ANSI
+  redraws and terminal menus stay in the terminal view instead of polluting the
+  transcript.
+- **Human control.** Approvals and deliveries can be reviewed in the chat. A
+  primary agent waits for delegated work to finish before continuing.
+- **Local-first by default.** The Engine owns local PTYs and private workspace
+  data. Remote collaboration is optional and goes through the Hub's rooms,
+  invitations, presence, and sanitized shared state.
 
 The local Engine owns PTYs, journals, and private workspace data. The optional
 Hub coordinates rooms, invites, presence, and sanitized shared state without
@@ -167,12 +195,15 @@ turning a remote service into shell access.
 ### Highlights
 
 - Native macOS canvas and browser canvas.
-- Real terminals, replay, journals, notes, image assets, and checklists.
-- Agent coordination with `ask`, `list`, `check`, and the **Queen** role.
+- Real terminal sessions with replayable journals and isolated agent homes.
+- Agent Chat with model selection, keyboard-friendly messaging, attachments,
+  approvals, semantic events, and readable responses.
+- Delegation records with explicit `queued`, `running`, `waitingApproval`,
+  `completed`, `failed`, and `canceled` states.
 - Browser portals with navigation, JavaScript evaluation, click, fill, key,
   screenshot, and PDF automation.
-- Collaborative rooms, invitations, missions, decisions, deliveries, and memory.
-- Local-first by default; remote collaboration is optional.
+- Collaborative rooms, invitations, presence, missions, decisions, deliveries,
+  memory, and workspace-scoped context.
 
 ### Quick Start
 
@@ -185,8 +216,19 @@ swift build
 open dist/Colmeia.app
 ```
 
-Use `colmeia --help` for the agent CLI and see [`docs/SPEC.md`](docs/SPEC.md)
-for the protocol and security model.
+Use `colmeia --help` for the complete CLI reference. Read the [demo video](docs/media/democolmeia.mov)
+for the product flow and [`docs/SPEC.md`](docs/SPEC.md) for the protocol and
+security model.
+
+### Agent workflow
+
+1. Open a workspace and choose its primary agent.
+2. Send a message from Agent Chat or open a terminal on the canvas.
+3. Delegate a focused task to a compatible worker when needed.
+4. Review tool activity and resolve approvals in the conversation.
+5. The primary agent resumes only after the delegated work reports an explicit
+   completion or failure.
+6. Return to the canvas to inspect notes, files, connections, and deliveries.
 
 ### Security Model
 

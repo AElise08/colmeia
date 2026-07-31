@@ -488,26 +488,26 @@ struct WebE2ETests {
 
         // Emite document.op com node.add
         let nodeID = ULID.generate()
+        let add = DocOp(
+            opID: .generate(), seq: 2, author: .humano("e2e"),
+            ts: Date(),
+            payload: .nodeAdd(NodeAddOpPayload(node: testTerminal(id: nodeID))))
         try c1.emit(topic: "document.op", params: [
             "workspace_id": wsID, "seq": 2,
-            "op": [
-                "op_id": ULID.generate().string, "author": "humano:e2e",
-                "ts": ISO8601DateFormatter().string(from: Date()),
-                "payload": ["type": "nodeAdd", "node": try asDict(testTerminal(id: nodeID))]
-            ]
+            "op": try asDict(add)
         ])
         try await Task.sleep(for: .milliseconds(100))
         let evts1 = c2.drainEvents()
         #expect(evts1.contains(where: { ($0["topic"] as? String) == "document.op" }))
 
         // Emite document.op com node.delete
+        let delete = DocOp(
+            opID: .generate(), seq: 3, author: .humano("e2e"),
+            ts: Date(),
+            payload: .nodeDelete(NodeDeleteOpPayload(id: nodeID)))
         try c1.emit(topic: "document.op", params: [
             "workspace_id": wsID, "seq": 3,
-            "op": [
-                "op_id": ULID.generate().string, "author": "humano:e2e",
-                "ts": ISO8601DateFormatter().string(from: Date()),
-                "payload": ["type": "nodeDelete", "id": nodeID.string]
-            ]
+            "op": try asDict(delete)
         ])
         try await Task.sleep(for: .milliseconds(100))
         let evts2 = c2.drainEvents()

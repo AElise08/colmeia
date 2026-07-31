@@ -53,6 +53,9 @@ final class TerminalController: NSObject, ObservableObject {
     /// nem log: só acompanha
     /// a saída que esta UI já recebeu, sem criar uma segunda fonte de verdade.
     @Published private(set) var linhasRecentes: [String] = []
+    /// Respostas reais extraídas do histórico estruturado do Codex. Diferente de
+    /// `linhasRecentes`, nunca contém repaint, ANSI, menus ou barras do TUI.
+    @Published private(set) var structuredAssistantMessages: [String] = []
 
     private(set) lazy var terminalView: ColmeiaTerminalView = makeTerminalView()
     private var lastSeq: UInt64 = 0
@@ -66,6 +69,7 @@ final class TerminalController: NSObject, ObservableObject {
     private var layoutWaiters: [CheckedContinuation<Void, Never>] = []
     /// Encadeia `session.input` para teclas não chegarem fora de ordem ao PTY.
     private var inputChain: Task<Void, Never>?
+    private var structuredResponseTask: Task<Void, Never>?
     /// Dois cliques em "Lançar" (ou menu + atalho) não podem abrir duas
     /// `session.start` concorrentes para o mesmo nó. Além do erro ruidoso no
     /// engine, a segunda resposta poderia trocar o handler do primeiro attach.
@@ -290,8 +294,7 @@ final class TerminalController: NSObject, ObservableObject {
     private func refreshUltimaLinha(_ data: Data) {
         if let text = String(data: data, encoding: .utf8) {
             let lines = text.split(whereSeparator: { $0.isNewline })
-                .map { Self.stripEscapes(String($0)).trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
+                .compactMap { Self.linhaDeAtividade(String($0)) }
             guard !lines.isEmpty else { return }
             ultimaLinha = lines.last ?? ultimaLinha
             linhasRecentes.append(contentsOf: lines)
@@ -299,9 +302,91 @@ final class TerminalController: NSObject, ObservableObject {
         }
     }
 
+    /// O Agent Chat é uma leitura de coordenação, não um emulador de terminal.
+    /// Descarta fragmentos de repaint, barras de status e prompts internos que
+    /// seriam úteis só no terminal completo — o Canvas continua exibindo tudo.
+    private static func linhaDeAtividade(_ raw: String) -> String? {
+        let line = stripEscapes(raw)
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard line.count >= 12 else { return nil }
+
+        let lower = line.lowercased()
+        let descartadas = [
+            "use /skills to list available skills",
+            "gpt-", "xhigh", "ctrl+c", "esc to", "tokens left",
+        ]
+        guard !descartadas.contains(where: { lower.contains($0) }) else { return nil }
+
+        let letters = line.unicodeScalars.filter {
+            CharacterSet.letters.contains($0)
+        }.count
+        let words = line.split(whereSeparator: { $0.isWhitespace })
+        guard letters >= 8, words.count >= 3 else { return nil }
+        return line
+    }
+
     private static func stripEscapes(_ raw: String) -> String {
-        raw.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[a-zA-Z]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "\u{1B}\\][^\u{07}]*\u{07}", with: "", options: .regularExpression)
+        // Terminal UIs use more than SGR colors: cursor movement, alternate
+        // screen, bracketed paste, OSC titles and 8-bit CSI sequences. Regexes
+        // that only remove ESC+[digits] leave fragments such as `40H` in the
+        // Agent Chat. Parse the control stream and keep only human-readable text.
+        var clean = String.UnicodeScalarView()
+        let scalars = Array(raw.unicodeScalars)
+        var index = 0
+
+        func isCSIFinal(_ scalar: UnicodeScalar) -> Bool {
+            scalar.value >= 0x40 && scalar.value <= 0x7E
+        }
+
+        while index < scalars.count {
+            let scalar = scalars[index]
+            if scalar.value == 0x1B { // ESC
+                index += 1
+                guard index < scalars.count else { break }
+                let next = scalars[index]
+                if next.value == 0x5B { // CSI: ESC [ ... final
+                    index += 1
+                    while index < scalars.count && !isCSIFinal(scalars[index]) { index += 1 }
+                    if index < scalars.count { index += 1 }
+                } else if next.value == 0x5D { // OSC: ESC ] ... BEL or ST
+                    index += 1
+                    while index < scalars.count {
+                        if scalars[index].value == 0x07 { index += 1; break }
+                        if scalars[index].value == 0x1B,
+                           index + 1 < scalars.count,
+                           scalars[index + 1].value == 0x5C {
+                            index += 2
+                            break
+                        }
+                        index += 1
+                    }
+                } else {
+                    // Single-character escape (save/restore cursor, keypad,
+                    // charset selection, etc.). It has no readable payload.
+                    index += 1
+                }
+                continue
+            }
+            if scalar.value == 0x9B { // 8-bit CSI
+                index += 1
+                while index < scalars.count && !isCSIFinal(scalars[index]) { index += 1 }
+                if index < scalars.count { index += 1 }
+                continue
+            }
+            switch scalar.value {
+            case 0x08: // backspace: emulate the visible effect for progress lines
+                if !clean.isEmpty { clean.removeLast() }
+            case 0x0D: // carriage return: ignore; the terminal renderer handles it
+                break
+            case 0x09, 0x0A, 0x20...0x10FFFF:
+                clean.append(scalar)
+            default:
+                break
+            }
+            index += 1
+        }
+        return String(clean)
     }
 
     // MARK: - Input / resize
@@ -319,10 +404,126 @@ final class TerminalController: NSObject, ObservableObject {
 
     /// Entrada curta disparada por uma superfície de acompanhamento. Usa o mesmo caminho serializado do
     /// terminal visível, portanto nunca fura a ordem do PTY.
-    func sendCommand(_ command: String) {
+    @discardableResult
+    func sendCommand(_ command: String) -> Bool {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        sendInput(Array((trimmed + "\n").utf8)[...])
+        guard !trimmed.isEmpty, session?.id != nil, viva else { return false }
+        // O Codex TUI diferencia line-feed de Return: LF pode apenas inserir uma
+        // quebra no compositor, enquanto CR confirma a mensagem. PTYs também
+        // traduzem CR corretamente para shells e demais CLIs.
+        sendInput(Array((trimmed + "\r").utf8)[...])
+        return true
+    }
+
+    /// Retoma o mesmo nó se necessário e só retorna depois que o engine
+    /// confirmou a entrada no PTY. É o caminho usado pelo Agent Chat.
+    func ensureAndSendCommand(workspaceID: ULID, floorID: ULID?, command: String) async throws {
+        let terminal = terminalView.getTerminal()
+        let result = try await connection.call(
+            .sessionEnsure,
+            params: SessionEnsureParams(
+                workspaceID: workspaceID,
+                nodeID: nodeID,
+                floorID: floorID,
+                cols: terminal.cols,
+                rows: terminal.rows),
+            expecting: SessionResult.self)
+        adopt(session: result.session)
+        await attach()
+        guard let sessionID = session?.id else {
+            throw ProtocolError(name: .internal_error, message: "session.ensure retornou sem sessão")
+        }
+        let cleanCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baselineCount = structuredAssistantContents(workspaceID: workspaceID).count
+        // Texto e Return precisam ser eventos separados. Quando ambos chegam no
+        // mesmo write, o Codex TUI pode tratá-los como paste e apenas preencher o
+        // compositor — exatamente o sintoma de "oi" visível, mas não enviado.
+        let data = Data(cleanCommand.utf8)
+        _ = try await connection.call(
+            .sessionInput,
+            params: SessionInputParams(sessionID: sessionID, dataB64: data.base64EncodedString()),
+            expecting: EmptyResult.self)
+        try await Task.sleep(nanoseconds: 120_000_000)
+        _ = try await connection.call(
+            .sessionInput,
+            params: SessionInputParams(
+                sessionID: sessionID,
+                dataB64: Data([0x0D]).base64EncodedString()),
+            expecting: EmptyResult.self)
+        watchStructuredCodexResponse(
+            workspaceID: workspaceID, baselineCount: baselineCount)
+    }
+
+    private func watchStructuredCodexResponse(
+        workspaceID: ULID,
+        baselineCount: Int
+    ) {
+        structuredResponseTask?.cancel()
+        structuredResponseTask = Task { [weak self] in
+            var consumedCount = baselineCount
+            var settledPolls = 0
+            for _ in 0..<360 {
+                guard !Task.isCancelled, let self else { return }
+                let messages = self.structuredAssistantContents(workspaceID: workspaceID)
+                if messages.count > consumedCount {
+                    self.structuredAssistantMessages.append(
+                        contentsOf: messages[consumedCount...])
+                    consumedCount = messages.count
+                    if self.structuredAssistantMessages.count > 50 {
+                        self.structuredAssistantMessages.removeFirst(
+                            self.structuredAssistantMessages.count - 50)
+                    }
+                    settledPolls = 0
+                }
+                let hasNewResponse = consumedCount > baselineCount
+                let isSettled = self.estado == .esperandoHumano || self.estado == .ociosa
+                settledPolls = hasNewResponse && isSettled ? settledPolls + 1 : 0
+                // Mantém mensagens intermediárias legíveis (sem TUI), mas só
+                // encerra o watcher depois de a sessão realmente estabilizar.
+                if settledPolls >= 6 {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+    }
+
+    private func structuredAssistantContents(workspaceID: ULID) -> [String] {
+        guard let file = latestCodexSessionFile(workspaceID: workspaceID),
+              let data = try? Data(contentsOf: file),
+              let raw = String(data: data, encoding: .utf8) else { return [] }
+        return raw.split(separator: "\n").compactMap { line -> String? in
+            guard let lineData = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  object["type"] as? String == "response_item",
+                  let payload = object["payload"] as? [String: Any],
+                  payload["type"] as? String == "message",
+                  payload["role"] as? String == "assistant",
+                  let content = payload["content"] as? [[String: Any]] else { return nil }
+            let text = content.compactMap { item -> String? in
+                guard item["type"] as? String == "output_text" else { return nil }
+                return item["text"] as? String
+            }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+    }
+
+    private func latestCodexSessionFile(workspaceID: ULID) -> URL? {
+        let sessions = ColmeiaPaths().workspaceDir(workspaceID)
+            .appendingPathComponent("codex", isDirectory: true)
+            .appendingPathComponent(nodeID.string, isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true)
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessions,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
+        ) else { return nil }
+        return enumerator.compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "jsonl" }
+            .max {
+                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return a < b
+            }
     }
 
     /// Throttle ~10/s (§9.3). A geometria enviada é SEMPRE a corrente do próprio

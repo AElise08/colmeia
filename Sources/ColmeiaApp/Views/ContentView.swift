@@ -13,17 +13,26 @@ struct ContentView: View {
     @State private var showNowPanel = false
     @State private var showFilesPanel = false
     @State private var showPromptComposer = false
+    @State private var surface: ColmeiaSurface = .canvas
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             if store.workspace != nil {
                 VStack(spacing: 0) {
+                    SurfaceSwitcher(selection: $surface)
                     FloorBar()
-                    CanvasView()
+                    workspaceStatusBar
+                    if surface == .canvas {
+                        CanvasView()
+                    } else {
+                        AgentChatView(surface: $surface)
+                    }
                 }
-                DrawingToolbar()
-                    .padding(.bottom, 14)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                if surface == .canvas {
+                    DrawingToolbar()
+                        .padding(.bottom, 14)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                }
             } else {
                 emptyState
             }
@@ -35,6 +44,19 @@ struct ContentView: View {
         .toolbar { toolbarContent }
         .onReceive(NotificationCenter.default.publisher(for: .colmeiaOpenRooms)) { _ in
             showRoomsPanel = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .colmeiaShowCanvas)) { _ in
+            surface = .canvas
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .colmeiaShowAgentChat)) { _ in
+            surface = .agentChat
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .colmeiaShowAttention)) { _ in
+            surface = .canvas
+            store.canvasViewMode = .atencao
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .colmeiaShowNow)) { _ in
+            openNowPanel()
         }
         .sheet(isPresented: $store.showNewTerminal) {
             NewTerminalSheet(adapterInicial: store.newTerminalAdapter)
@@ -201,6 +223,71 @@ struct ContentView: View {
         .padding(12)
     }
 
+    private var workspaceStatusBar: some View {
+        HStack(spacing: 12) {
+            Label(
+                "\(workingWorkers.count) working",
+                systemImage: "circle.fill"
+            )
+            .font(.caption)
+            .foregroundStyle(workingWorkers.isEmpty ? Color.secondary : Color.green)
+
+            Button {
+                surface = .canvas
+                store.canvasViewMode = .atencao
+            } label: {
+                Label("\(attentionCount) attention", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(attentionCount == 0 ? Color.secondary : Color.orange)
+            }
+            .buttonStyle(.plain)
+            .help("Show agents waiting for approval, human input, or review")
+
+            Button(action: openNowPanel) {
+                Label("Now", systemImage: "rectangle.and.text.magnifyingglass")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Open the live activity panel (⌘⌥I)")
+
+            Spacer()
+
+            Label(store.roomSyncLabel, systemImage: "antenna.radiowaves.left.and.right")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(.ultraThinMaterial)
+    }
+
+    private var workingWorkers: [ActiveWorkerSummary] {
+        activeWorkers.filter { worker in
+            worker.estado == .rodando || worker.estado == .iniciando
+        }
+    }
+
+    private var attentionCount: Int {
+        let sessionAttention = activeWorkers.filter { worker in
+            worker.estado == .esperandoHumano || worker.estado == .aprovacaoPendente
+        }.count
+        let approvalAttention = store.pendingApprovals.count
+        let deliveryAttention = store.deliveries.filter { $0.estado == .proposed || $0.estado == .reopened }.count
+        let escalatedAttention = operationAlerts.filter(\.escalated).count
+        return sessionAttention + approvalAttention + store.openDecisions.count + deliveryAttention + escalatedAttention
+    }
+
+    private func openNowPanel() {
+        showNowPanel = true
+        Task {
+            await store.refreshDeliveries()
+            await store.refreshWatchdog()
+            await store.refreshWorkerArchives()
+        }
+    }
+
     /// §3.3/§6.3 — engine sobreviveu ao upgrade dos binários: banner PERSISTENTE
     /// (métodos novos falhariam silenciosamente) com a reciclagem a um clique.
     /// Não bloqueia o uso do app; some sozinho quando as versões batem.
@@ -307,12 +394,7 @@ struct ContentView: View {
 
             Menu {
                 Button {
-                    showNowPanel = true
-                    Task {
-                        await store.refreshDeliveries()
-                        await store.refreshWatchdog()
-                        await store.refreshWorkerArchives()
-                    }
+                    openNowPanel()
                 } label: {
                     Label("Agora", systemImage: "rectangle.and.text.magnifyingglass")
                 }

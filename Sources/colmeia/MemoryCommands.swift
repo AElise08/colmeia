@@ -64,7 +64,7 @@ enum MemoryCommand {
 }
 
 enum DoneCommand {
-    static let usage = "uso: colmeia done --status <completed|partial|blocked|failed> --summary <resumo> [--evidence <tipo:referência>] [--test <id:passed|failed|skipped>]"
+    static let usage = "uso: colmeia done --status <completed|partial|blocked|failed> --summary <resumo> [--delegation <id>] [--evidence <tipo:referência>] [--test <id:passed|failed|skipped>]"
 
     static func run(_ args: [String], context: CLIContext = CLIContext()) async -> Int32 {
         do {
@@ -74,13 +74,18 @@ enum DoneCommand {
             }
             var status: DeliveryEstado?
             var summary: String?
+            var delegationID: ULID?
             var evidence: [DeliveryEvidence] = []
             var index = 0
             while index < args.count {
                 let argument = args[index]
                 switch argument {
+                case "--delegation":
+                    index += 1; guard index < args.count, let id = ULID(args[index]) else { throw failure() }; delegationID = id
                 case "--status":
-                    index += 1; guard index < args.count, let value = DeliveryEstado(rawValue: args[index]) else { throw failure() }; status = value
+                    index += 1; guard index < args.count else { throw failure() }
+                    status = args[index] == "completed" ? .accepted : DeliveryEstado(rawValue: args[index])
+                    guard status != nil else { throw failure() }
                 case "--summary":
                     index += 1; guard index < args.count else { throw failure() }; summary = args[index]
                 case "--evidence":
@@ -94,6 +99,14 @@ enum DoneCommand {
                 index += 1
             }
             guard let status, let summary else { throw failure() }
+            if let delegationID {
+                let client = try await connectEngine(context); defer { client.close() }
+                let result: DelegationResult = try await racedCall(client: client, watchdogSeconds: 30, expiry: CLIFailure(code: CLIExit.contexto, message: "engine não respondeu em 30s")) {
+                    try await client.call(.delegationDone, params: DelegationDoneParams(delegationID: delegationID, status: status == .accepted ? .completed : .failed, result: summary), expecting: DelegationResult.self)
+                }
+                print("delegação \(result.delegation.id.string) \(result.delegation.estado.rawValue)")
+                return CLIExit.ok
+            }
             let submission = DeliverySubmission(
                 id: ULID.generate(), workspaceID: identity.workspaceID, sessionID: sessionID, nodeID: identity.nodeID,
                 estado: status, resumo: summary, evidencias: evidence)

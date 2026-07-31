@@ -44,6 +44,9 @@ public struct TerminalNode: Codable, Equatable, Sendable {
     public var nome: String
     public var papel: String?
     public var adapter: String
+    /// Modelo explícito do adapter, quando o motor aceita seleção por lançamento.
+    /// `nil` significa seguir o padrão configurado pelo próprio CLI.
+    public var modelo: String?
     public var comandoOverride: String?
     public var cwd: String
     public var monitorarAtividade: Bool
@@ -51,7 +54,7 @@ public struct TerminalNode: Codable, Equatable, Sendable {
     public var sessionID: ULID?
 
     enum CodingKeys: String, CodingKey {
-        case id, posicao, tamanho, z, nome, papel, adapter, cwd, aparencia
+        case id, posicao, tamanho, z, nome, papel, adapter, modelo, cwd, aparencia
         case criadoEm = "criado_em"
         case comandoOverride = "comando_override"
         case monitorarAtividade = "monitorar_atividade"
@@ -67,6 +70,7 @@ public struct TerminalNode: Codable, Equatable, Sendable {
         nome: String,
         papel: String? = nil,
         adapter: String,
+        modelo: String? = nil,
         comandoOverride: String? = nil,
         cwd: String,
         monitorarAtividade: Bool = true,
@@ -81,6 +85,7 @@ public struct TerminalNode: Codable, Equatable, Sendable {
         self.nome = nome
         self.papel = papel
         self.adapter = adapter
+        self.modelo = modelo
         self.comandoOverride = comandoOverride
         self.cwd = cwd
         self.monitorarAtividade = monitorarAtividade

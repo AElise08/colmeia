@@ -14,7 +14,7 @@ let unixPath = CommandLine.arguments[2]
 
 var listenFD: Int32 = -1
 
-func posixError(_ code: Int32) -> Error {
+let posixError: @Sendable (Int32) -> Error = { code in
     NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: nil)
 }
 
