@@ -654,6 +654,33 @@ private final class TmuxPrefixMonitorView: NSView {
         }
 
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // SwiftUI's command builder can expose a shifted command as only its
+        // base command on some macOS versions. Keep the productivity shortcuts
+        // reliable at the event boundary as well, while leaving plain typing
+        // and terminal input untouched.
+        if mods == [.command, .shift], let char = event.charactersIgnoringModifiers?.lowercased() {
+            switch char {
+            case "n":
+                store?.addNota()
+                return nil
+            case "p":
+                store?.showNewPortal = true
+                return nil
+            case "a":
+                store?.showApprovals.toggle()
+                return nil
+            case "r":
+                store?.showRoutines.toggle()
+                return nil
+            case "z":
+                store?.redo()
+                return nil
+            default:
+                break
+            }
+        }
+
         if event.keyCode == Self.prefixKeyCode, mods == .control {
             // Em campo de texto, ⌃A mantém o comportamento nativo de mover ao
             // começo da linha; no terminal é deliberadamente o prefixo tmux.

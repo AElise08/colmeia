@@ -123,16 +123,16 @@ struct ColmeiaCanvasApp: App {
                     .keyboardShortcut("z", modifiers: .command)
                     .disabled(!store.canUndo)
                 Button("Refazer") { store.redo() }
-                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .keyboardShortcut("Z", modifiers: .command)
                     .disabled(!store.canRedo)
             }
             CommandGroup(replacing: .newItem) {
                 Button("Novo Terminal…") { store.presentNewTerminal(adapter: store.newTerminalAdapter) }
                     .keyboardShortcut("n", modifiers: .command)
                 Button("Nova Nota") { store.addNota() }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .keyboardShortcut("N", modifiers: .command)
                 Button("Novo Portal") { store.showNewPortal = true }
-                    .keyboardShortcut("p", modifiers: [.command, .shift])
+                    .keyboardShortcut("P", modifiers: .command)
             }
             CommandMenu("Canvas") {
                 Button("Canvas") {
@@ -160,9 +160,9 @@ struct ColmeiaCanvasApp: App {
                     .keyboardShortcut("0", modifiers: .command)
                 Divider()
                 Button("Fila de Aprovações") { store.showApprovals.toggle() }
-                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .keyboardShortcut("A", modifiers: .command)
                 Button("Rotinas…") { store.showRoutines.toggle() }
-                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .keyboardShortcut("R", modifiers: .command)
                 Divider()
                 Button("Abrir no Editor") { abrirNoEditor() }
                     .keyboardShortcut("e", modifiers: .command)
