@@ -246,18 +246,17 @@ final class TerminalController: NSObject, ObservableObject {
     /// (§18.3) — `session.replay` funciona para sessões encerradas (§6.4).
     func restoreDeadFrame() async {
         guard let session, lastSeq == 0 else { return }
-        // Um frame morto é apenas uma prévia visual. Não precisamos transportar
-        // o journal inteiro para a UI: sessões antigas podem ter dezenas de MB e
-        // uma única resposta maior que o limite de transporte dispara backpressure
-        // antes de o socket conseguir drená-la. O journal permanece completo no
-        // Engine e pode ser consultado/reproduzido com limites explícitos.
+        terminalView.resize(cols: session.cols, rows: session.rows)
+
+        // O frame morto é uma prévia visual. Recuperar dezenas de milhares de
+        // eventos no MainActor torna o terminal impraticável; o journal completo
+        // continua preservado no Engine para replay explícito.
         let frameReplayLimit = 128
         guard let result = try? await connection.call(
             .sessionReplay,
             params: SessionReplayParams(sessionID: session.id, limit: frameReplayLimit),
             expecting: SessionReplayResult.self
         ) else { return }
-        terminalView.resize(cols: session.cols, rows: session.rows)
         feedReplay(result.events)
     }
 

@@ -27,6 +27,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleExecutable</key>
 	<string>ColmeiaApp</string>
 	<key>CFBundleIconFile</key>
+	<string>Colmeia.icns</string>
+	<key>CFBundleIconName</key>
 	<string>Colmeia</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.mel.colmeia</string>
