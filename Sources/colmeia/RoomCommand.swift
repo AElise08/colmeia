@@ -145,8 +145,11 @@ enum RoomCommand {
 
     private static func deleteRoom(_ args: [String], context: CLIContext) async -> Int32 {
         do {
-            guard let idString = args.first, let roomID = ULID(idString) else { throw fail() }
-            let client = try await connectEngine(context)
+            let (hubURL, hubToken, cleanArgs) = extractHubURL(from: args)
+            guard let idString = cleanArgs.first, let roomID = ULID(idString) else { throw fail() }
+            let client = try await connectEngine(CLIContext(
+                socketPath: hubURL ?? context.socketPath,
+                hubToken: hubToken ?? context.hubToken))
             defer { client.close() }
             _ = try await client.call(.roomDelete, params: RoomDeleteParams(roomID: roomID, confirmar: true))
             print("sala removida: \(roomID.string)")
