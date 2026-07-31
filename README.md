@@ -18,7 +18,11 @@
 
 ## Demo
 
-See Colmeia in action: [download or open the demo video](docs/media/democolmeia.mov).
+<video controls width="100%" src="https://raw.githubusercontent.com/AElise08/colmeia/main/docs/media/democolmeia.mov">
+  Your browser cannot play the embedded demo. [Download the demo video](docs/media/democolmeia.mov).
+</video>
+
+If GitHub does not show the player in your browser, [download or open the demo video](docs/media/democolmeia.mov).
 
 The demo shows the visual canvas, agent workspace, shared access flow, and the
 conversation view for coordinating work without losing the project context.
