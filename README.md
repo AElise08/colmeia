@@ -1,12 +1,16 @@
 # Colmeia
 
 <p align="center">
+  <img src="docs/colmeia-banner.svg" alt="Colmeia - a visual workspace for people and AI agents" width="100%">
+</p>
+
+<p align="center">
   <strong>Um espaço visual para pessoas e agentes de IA trabalharem juntos.</strong><br>
   <strong>A visual workspace where people and AI agents can work together.</strong>
 </p>
 
 <p align="center">
-  <a href="#portugues">Português</a> | <a href="#english">English</a> | <a href="LICENSE">MIT License</a>
+  <a href="#portugues">Português</a> | <a href="#english">English</a> | <a href="docs/SPEC.md">Specification</a> | <a href="docs/RELEASE_NOTES_0.3.0.md">Release notes</a> | <a href="docs/PRIVACY.md">Privacy</a> | <a href="LICENSE">MIT License</a>
 </p>
 
 > Status: public beta. Colmeia is ready for local-first work and invited Hub
@@ -134,8 +138,9 @@ COLMEIA_BROWSER_TESTS=1 ./test.sh --filter AgentCapabilitiesTests
 ./scripts/benchmark.sh
 ```
 
-O repositório tem scripts de deploy, mas credenciais e infraestrutura de
-produção devem ficar fora do Git.
+Leia [`docs/SPEC.md`](docs/SPEC.md) para o contrato de segurança, arquitetura e
+protocolo. O repositório tem scripts de deploy, mas credenciais e infraestrutura
+de produção devem ficar fora do Git.
 
 ### Licença e marca
 
@@ -205,8 +210,8 @@ swift build
 open dist/Colmeia.app
 ```
 
-Use `colmeia --help` for the complete CLI reference and inspect the source for
-the protocol and security model.
+Use `colmeia --help` for the complete CLI reference. Read [`docs/SPEC.md`](docs/SPEC.md)
+for the protocol and security model.
 
 ### Agent workflow
 

@@ -1,5 +1,5 @@
 // swift-tools-version: 6.0
-// Colmeia — canvas colaborativo de agentes.
+// Colmeia — canvas colaborativo de agentes (spec: docs/SPEC.md).
 // Sem xcodebuild nesta máquina: apenas `swift build` / `swift test`.
 import PackageDescription
 
