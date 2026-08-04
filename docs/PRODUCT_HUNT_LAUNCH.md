@@ -28,9 +28,7 @@ Use `docs/democolmeia-poster.png` as the thumbnail and
 
 ## Launch checklist
 
-O checklist operacional completo está em
-`docs/LAUNCH_TODO.md`.
-Antes do envio, publique também `docs/PRIVACY.md` em uma URL estável e
+Antes do envio, publique `docs/PRIVACY.md` em uma URL estável e
 substitua o contato de suporte de placeholder pelo endereço real.
 
 - [ ] Build the macOS app with `./scripts/build-app.sh`; sign/notarize it for
