@@ -10,11 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="#portugues">Português</a> | <a href="#english">English</a> | <a href="docs/SPEC.md">Specification</a> | <a href="LICENSE">MIT License</a>
+  <a href="#portugues">Português</a> | <a href="#english">English</a> | <a href="docs/SPEC.md">Specification</a> | <a href="docs/RELEASE_NOTES_0.3.0.md">Release notes</a> | <a href="docs/PRIVACY.md">Privacy</a> | <a href="LICENSE">MIT License</a>
 </p>
 
-> Status: alpha. Colmeia is usable for local experimentation, but its protocol,
-> storage layout, and collaboration UX may still change.
+> Status: public beta. Colmeia is ready for local-first work and invited Hub
+> collaboration; protocol and storage migrations remain backward-compatible
+> work in progress.
 
 ---
 

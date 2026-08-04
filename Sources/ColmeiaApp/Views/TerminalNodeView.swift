@@ -17,6 +17,7 @@ struct TerminalNodeView<Drag: Gesture>: View {
     @ObservedObject var controller: TerminalController
     let zoom: Double
     let conteudoVisivel: Bool
+    let isInteracting: Bool
     let dragGesture: Drag
 
     @EnvironmentObject private var store: AppStore
@@ -36,7 +37,9 @@ struct TerminalNodeView<Drag: Gesture>: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if zoom < 0.4 {
+            if isInteracting {
+                moldura
+            } else if zoom < 0.4 {
                 cartaoSemantico
             } else if conteudoVisivel {
                 corpo

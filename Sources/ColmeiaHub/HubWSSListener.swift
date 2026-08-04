@@ -22,13 +22,26 @@ public final class HubWSSListener: @unchecked Sendable {
     public let port: UInt16
     public let tlsIdentity: SecIdentity?
     public let serverHostname: String?
+    /// Porta TCP interna onde o HubServer fala NDJSON/WebSocket sem TLS. O
+    /// listener TLS funciona como um proxy de bytes: termina TLS e entrega o
+    /// mesmo handshake/frame ao HubClient existente.
+    public let backendHost: String
+    public let backendPort: UInt16
     private let queue = DispatchQueue(label: "colmeia.hub.wss")
     private var listener: NWListener?
 
-    public init(port: UInt16, tlsIdentity: SecIdentity? = nil, serverHostname: String? = nil) {
+    public init(
+        port: UInt16,
+        tlsIdentity: SecIdentity? = nil,
+        serverHostname: String? = nil,
+        backendHost: String = "127.0.0.1",
+        backendPort: UInt16? = nil
+    ) {
         self.port = port
         self.tlsIdentity = tlsIdentity
         self.serverHostname = serverHostname
+        self.backendHost = backendHost
+        self.backendPort = backendPort ?? (port == UInt16.max ? port : port &+ 1)
     }
 
     public func start() throws {
@@ -62,7 +75,48 @@ public final class HubWSSListener: @unchecked Sendable {
     }
 
     private func handle(connection: NWConnection) {
+        let backend = NWConnection(
+            host: NWEndpoint.Host(backendHost),
+            port: NWEndpoint.Port(rawValue: backendPort) ?? .any,
+            using: NWParameters.tcp)
+
+        let closeBoth: () -> Void = {
+            connection.cancel()
+            backend.cancel()
+        }
         connection.start(queue: queue)
+        backend.stateUpdateHandler = { state in
+            if case .failed = state { closeBoth() }
+            if case .cancelled = state { connection.cancel() }
+        }
+        connection.stateUpdateHandler = { state in
+            if case .failed = state { closeBoth() }
+            if case .cancelled = state { backend.cancel() }
+        }
+        backend.start(queue: queue)
+        relay(from: connection, to: backend, closeBoth: closeBoth)
+        relay(from: backend, to: connection, closeBoth: closeBoth)
+    }
+
+    private func relay(
+        from source: NWConnection,
+        to destination: NWConnection,
+        closeBoth: @escaping () -> Void
+    ) {
+        source.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
+            [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            if let data, !data.isEmpty {
+                destination.send(content: data, completion: .contentProcessed { sendError in
+                    if sendError != nil { closeBoth() }
+                    else { self.relay(from: source, to: destination, closeBoth: closeBoth) }
+                })
+            } else if isComplete || error != nil {
+                closeBoth()
+            } else {
+                self.relay(from: source, to: destination, closeBoth: closeBoth)
+            }
+        }
     }
 
     public static func loadIdentity(pkcs12Path: String, password: String) -> SecIdentity? {
@@ -89,7 +143,13 @@ public final class HubWSSListener: @unchecked Sendable {
 public final class HubWSSListener: @unchecked Sendable {
     public let port: UInt16
 
-    public init(port: UInt16, tlsIdentity: Any? = nil, serverHostname: String? = nil) {
+    public init(
+        port: UInt16,
+        tlsIdentity: Any? = nil,
+        serverHostname: String? = nil,
+        backendHost: String = "127.0.0.1",
+        backendPort: UInt16? = nil
+    ) {
         self.port = port
     }
 

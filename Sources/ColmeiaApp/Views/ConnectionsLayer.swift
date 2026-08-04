@@ -5,14 +5,36 @@ import ColmeiaKit
 /// durante drag/pan/zoom (posições vêm do espelho do store). Clique seleciona
 /// (Delete apaga); menu de contexto apaga direto.
 struct ConnectionsLayer: View {
+    let isInteracting: Bool
+
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ForEach(Array(store.connections.values), id: \.id) { connection in
-                ConnectionLineView(connection: connection)
+            ForEach(visibleConnections, id: \.id) { connection in
+                ConnectionLineView(connection: connection, isInteracting: isInteracting)
             }
             pendingLine
+        }
+    }
+
+    private var visibleConnections: [Connection] {
+        let viewport = CGRect(
+            x: store.viewport.x,
+            y: store.viewport.y,
+            width: Double(store.canvasSize.width) / store.viewport.zoom,
+            height: Double(store.canvasSize.height) / store.viewport.zoom
+        ).insetBy(dx: CanvasPerformancePolicy.preloadMargin(zoom: store.viewport.zoom),
+                  dy: CanvasPerformancePolicy.preloadMargin(zoom: store.viewport.zoom))
+
+        return store.connections.values.filter { connection in
+            guard let from = store.nodes[connection.de], let to = store.nodes[connection.para],
+                  store.nodeIsVisibleOnActiveFloor(from.id), store.nodeIsVisibleOnActiveFloor(to.id) else {
+                return false
+            }
+            let fromRect = worldRect(from)
+            let toRect = worldRect(to)
+            return viewport.intersects(fromRect) || viewport.intersects(toRect)
         }
     }
 
@@ -46,6 +68,7 @@ private func worldRect(_ node: Node) -> CGRect {
 
 struct ConnectionLineView: View {
     let connection: Connection
+    let isInteracting: Bool
 
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -60,8 +83,12 @@ struct ConnectionLineView: View {
            store.nodeIsVisibleOnActiveFloor(connection.para),
            let de = store.nodes[connection.de],
            let para = store.nodes[connection.para] {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
-                rope(de: de, para: para, time: timeline.date.timeIntervalSinceReferenceDate)
+            if CanvasPerformancePolicy.shouldAnimateConnections(interacting: isInteracting, reduceMotion: reduceMotion) {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
+                    rope(de: de, para: para, time: timeline.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                rope(de: de, para: para, time: 0)
             }
         }
     }

@@ -25,6 +25,7 @@ final class HubConnection: ObservableObject {
     @Published private(set) var engineVersion: String?
     @Published private(set) var activeRoomID: ULID?
     @Published private(set) var lastConnectionError: String?
+    @Published private(set) var pendingOutboxCount: Int = 0
 
     public var onEvent: ((EventMessage) -> Void)?
     public var onConnected: (() async -> Void)?
@@ -34,12 +35,15 @@ final class HubConnection: ObservableObject {
     private var reconnectAttempt = 0
     private var loopTask: Task<Void, Never>?
     private var eventObservers: [UUID: (EventMessage) -> Void] = [:]
+    private var outboxes: [ULID: HubOutbox] = [:]
+    private let outboxPaths = ColmeiaPaths()
 
     public init(hubURL: String? = nil, token: String? = nil) {
         self.hubURL = hubURL ?? HubConnection.savedHubURL
         self.hubToken = token
             ?? HubConnection.savedHubToken
             ?? ProcessInfo.processInfo.environment["COLMEIA_HUB_TOKEN"]
+        loadPersistedOutboxes()
     }
 
     public func saveConfiguration(url: String, token: String) {
@@ -94,13 +98,14 @@ final class HubConnection: ObservableObject {
     }
 
     public func call<R: Decodable>(_ method: ColmeiaMethod, params: some Encodable, expecting: R.Type) async throws -> R {
-        let rawResult = try await callRaw(method: method.rawValue, params: JSONValue(encoding: params))
+        let encoded = try JSONValue(encoding: params)
+        let rawResult = try await callWithOfflineQueue(method: method, params: encoded)
         return try rawResult.decode(as: R.self)
     }
 
     @discardableResult
     public func call(_ method: ColmeiaMethod, params: some Encodable) async throws -> JSONValue {
-        try await callRaw(method: method.rawValue, params: JSONValue(encoding: params))
+        try await callWithOfflineQueue(method: method, params: JSONValue(encoding: params))
     }
 
     public func callRaw(method: String, params: JSONValue?) async throws -> JSONValue {
@@ -149,6 +154,7 @@ final class HubConnection: ObservableObject {
         engineVersion = helloResult.engineVersion
         lastConnectionError = nil
         reconnectAttempt = 0
+        await replayOutboxes()
         await onConnected?()
 
         for await event in client.events {
@@ -160,6 +166,112 @@ final class HubConnection: ObservableObject {
     private func disconnectWebSocket() {
         socketClient?.close()
         socketClient = nil
+    }
+
+    private func callWithOfflineQueue(method: ColmeiaMethod, params: JSONValue) async throws -> JSONValue {
+        let requestID = "offline-\(ULID.generate().string)"
+        do {
+            guard let socketClient else {
+                throw SocketClientError.notConnected
+            }
+            return try await socketClient.callRaw(
+                method: method.rawValue, params: params, requestID: requestID)
+        } catch {
+            guard Self.isTransportFailure(error), Self.isQueueable(method),
+                  let roomID = Self.roomID(from: params) else { throw error }
+            do {
+                let data = try ColmeiaJSON.encoder().encode(params)
+                let outbox = outbox(for: roomID)
+                _ = try outbox.enqueue(method: method, paramsJSON: data, requestID: requestID)
+                refreshOutboxCount()
+            } catch {
+                // Preserva o erro original de transporte: não fingimos que a
+                // intenção foi persistida se o disco também falhou.
+            }
+            throw error
+        }
+    }
+
+    private func outbox(for roomID: ULID) -> HubOutbox {
+        if let existing = outboxes[roomID] { return existing }
+        let created = HubOutbox(roomID: roomID, paths: outboxPaths)
+        outboxes[roomID] = created
+        return created
+    }
+
+    private func loadPersistedOutboxes() {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: outboxPaths.roomsDir, includingPropertiesForKeys: nil) else { return }
+        for entry in entries {
+            guard let roomID = ULID(entry.lastPathComponent) else { continue }
+            let outbox = HubOutbox(roomID: roomID, paths: outboxPaths)
+            if outbox.pendingCount > 0 { outboxes[roomID] = outbox }
+        }
+        refreshOutboxCount()
+    }
+
+    private func refreshOutboxCount() {
+        pendingOutboxCount = outboxes.values.reduce(0) { $0 + $1.pendingCount }
+    }
+
+    private func replayOutboxes() async {
+        let pending = outboxes.values.flatMap { outbox in
+            outbox.pending().map { (outbox, $0) }
+        }
+        for (outbox, entry) in pending {
+            guard let params = try? ColmeiaJSON.decoder().decode(JSONValue.self, from: entry.paramsJSON) else {
+                try? outbox.markFailure(id: entry.id, error: "payload JSON inválido")
+                continue
+            }
+            do {
+                _ = try await socketClientCall(
+                    method: entry.method.rawValue,
+                    params: params,
+                    requestID: entry.requestID)
+                try outbox.remove(id: entry.id)
+            } catch {
+                try? outbox.markFailure(id: entry.id, error: error.localizedDescription)
+                if Self.isTransportFailure(error) { break }
+            }
+        }
+        refreshOutboxCount()
+    }
+
+    private func socketClientCall(
+        method: String,
+        params: JSONValue,
+        requestID: String?
+    ) async throws -> JSONValue {
+        guard let socketClient else { throw SocketClientError.notConnected }
+        return try await socketClient.callRaw(method: method, params: params, requestID: requestID)
+    }
+
+    private static func roomID(from params: JSONValue) -> ULID? {
+        guard case .object(let object) = params,
+              case .string(let value) = object["room_id"] else { return nil }
+        return ULID(value)
+    }
+
+    private static func isTransportFailure(_ error: Error) -> Bool {
+        if error is SocketClientError { return true }
+        return false
+    }
+
+    private static func isQueueable(_ method: ColmeiaMethod) -> Bool {
+        switch method {
+        case .roomLeave, .roomDelete, .roomUpdate,
+             .memberInvite, .memberInviteRevoke, .memberUpdate, .memberRemove,
+             .agentSessionCreate, .agentSessionUpdate,
+             .sessionEventAppend, .grantIssue, .grantRevoke,
+             .missionCreate, .missionUpdate, .missionTransition,
+             .workstreamCreate, .workstreamUpdate, .workstreamTransition,
+             .decisionCreate, .decisionDecide, .decisionSupersede, .decisionCancel,
+             .relationAdd, .relationRemove, .roomLayoutUpdate,
+             .executionJobCreate, .executionJobTransition:
+            return true
+        default:
+            return false
+        }
     }
 }
 

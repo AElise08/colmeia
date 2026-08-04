@@ -212,6 +212,13 @@ enum SyncTool {
                 hub.send(.event(ev))
             } else if ev.knownTopic == .watchdogAlert {
                 hub.send(.event(ev))
+            } else if ev.knownTopic == .missionChanged
+                    || ev.knownTopic == .workstreamChanged
+                    || ev.knownTopic == .decisionChanged
+                    || ev.knownTopic == .deliveryChanged {
+                // O sync não interpreta o agregado: apenas repassa o delta
+                // semântico para que o Hub mantenha a mesma linha do tempo.
+                hub.send(.event(ev))
             }
         }
         hub.onEvent = { ev in

@@ -282,14 +282,11 @@ struct AgentChatView: View {
 
     private var inlineApprovals: some View {
         let approvals = store.pendingApprovals.filter { approval in
-            selectedAgentID == nil || store.nodes.values.contains { node in
-                if case .terminal(let terminal) = node { return terminal.id == selectedAgentID && approval.nodeNome == terminal.nome }
-                return false
-            }
+            selectedAgentID == nil || store.node(bySession: approval.sessionID) == selectedAgentID
         }
         return Group {
             ForEach(approvals, id: \.id) { approval in
-                ApprovalCard(approval: approval) {}
+                AgentApprovalBubble(approval: approval)
             }
         }
     }
@@ -755,6 +752,112 @@ private struct AgentMessageCard: View {
         .padding(13)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+/// Pedido de serviço dentro da conversa. A autorização permanece no mesmo
+/// fluxo do chat e usa o mesmo approval.resolve do painel global; não é uma
+/// segunda política de segurança.
+private struct AgentApprovalBubble: View {
+    let approval: Approval
+
+    @EnvironmentObject private var store: AppStore
+    @State private var resolving = false
+
+    private var agentName: String {
+        store.nodeName(store.node(bySession: approval.sessionID) ?? approval.sessionID)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Color.orange.opacity(0.18))
+                Image(systemName: serviceSymbol)
+                    .foregroundStyle(.orange)
+            }
+            .frame(width: 30, height: 30)
+
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(agentName)
+                        .font(.caption.weight(.bold))
+                    Text("needs authorization")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(idade)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Text("This agent wants to use a service:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(approval.resumo)
+                    .font(.callout)
+                    .textSelection(.enabled)
+
+                HStack(spacing: 8) {
+                    if let options = approval.opcoes, !options.isEmpty {
+                        ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                            Button {
+                                resolve(.aprovar, optionIndex: index)
+                            } label: {
+                                Label(option, systemImage: "checkmark.shield")
+                            }
+                            .disabled(resolving)
+                        }
+                    } else {
+                        Button {
+                            resolve(.aprovar, optionIndex: nil)
+                        } label: {
+                            Label("Authorize", systemImage: "checkmark.shield")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(resolving)
+                    }
+                    Button("Deny", role: .destructive) {
+                        resolve(.negar, optionIndex: nil)
+                    }
+                    .disabled(resolving)
+                }
+                .controlSize(.small)
+            }
+            .padding(13)
+            .frame(maxWidth: 680, alignment: .leading)
+            .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.orange.opacity(0.28), lineWidth: 1))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var idade: String {
+        let seconds = Int(Date().timeIntervalSince(approval.criadaEm))
+        if seconds < 60 { return "(seconds)s" }
+        if seconds < 3_600 { return "(seconds / 60)m" }
+        return "(seconds / 3_600)h"
+    }
+
+    private var serviceSymbol: String {
+        let text = approval.resumo.lowercased()
+        if text.contains("file") || text.contains("arquivo") || text.contains("write") {
+            return "doc.badge.gearshape"
+        }
+        if text.contains("web") || text.contains("http") || text.contains("browser") {
+            return "globe"
+        }
+        if text.contains("command") || text.contains("shell") || text.contains("terminal") {
+            return "terminal"
+        }
+        return "lock.shield"
+    }
+
+    private func resolve(_ decision: ApprovalDecisao, optionIndex: Int?) {
+        resolving = true
+        Task {
+            await store.resolve(approval: approval, decisao: decision, opcaoIndex: optionIndex)
+            resolving = false
+        }
     }
 }
 

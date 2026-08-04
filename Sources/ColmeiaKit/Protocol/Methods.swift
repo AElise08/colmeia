@@ -98,6 +98,8 @@ public enum ColmeiaMethod: String, Codable, CaseIterable, Sendable {
     case roomList = "room.list"
     case roomUpdate = "room.update"
     case roomDelete = "room.delete"
+    case roomLayoutGet = "room.layout.get"
+    case roomLayoutUpdate = "room.layout.update"
     // Multiplayer — member.* (§7.1)
     case memberInvite = "member.invite"
     case memberInviteList = "member.invite.list"
@@ -122,6 +124,11 @@ public enum ColmeiaMethod: String, Codable, CaseIterable, Sendable {
     case grantIssue = "grant.issue"
     case grantRevoke = "grant.revoke"
     case grantList = "grant.list"
+    // Jobs tipados para Worker remoto — mensagens nunca são comandos.
+    case executionJobCreate = "execution_job.create"
+    case executionJobGet = "execution_job.get"
+    case executionJobList = "execution_job.list"
+    case executionJobTransition = "execution_job.transition"
     // Multiplayer — presence (§4.1.6, efêmero)
     case presenceUpdate = "presence.update"
     // Multiplayer — lease (§6.1)
@@ -339,6 +346,49 @@ public struct WorkspaceCloseParams: Codable, Equatable, Sendable {
 
     public init(id: ULID) {
         self.id = id
+    }
+}
+
+// MARK: - room.layout.*
+
+/// Posições canônicas dos objetos semânticos da Sala. O objeto é endereçado por
+/// ULID (Missão, Frente ou futura entidade visual) e a posição continua
+/// independente do estado operacional do objeto.
+public struct RoomLayoutGetParams: Codable, Equatable, Sendable {
+    public var roomID: ULID
+
+    enum CodingKeys: String, CodingKey { case roomID = "room_id" }
+
+    public init(roomID: ULID) { self.roomID = roomID }
+}
+
+public struct RoomLayoutResult: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var positions: [String: Ponto]
+
+    enum CodingKeys: String, CodingKey { case roomID = "room_id", positions }
+
+    public init(roomID: ULID, positions: [String: Ponto] = [:]) {
+        self.roomID = roomID
+        self.positions = positions
+    }
+}
+
+public struct RoomLayoutUpdateParams: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var objectID: ULID
+    public var position: Ponto
+
+    enum CodingKeys: String, CodingKey {
+        case position
+        case roomID = "room_id"
+        case objectID = "object_id"
+    }
+
+    public init(roomID: ULID, objectID: ULID, position: Ponto) {
+        self.roomID = roomID
+        self.objectID = objectID
+        self.position = position
     }
 }
 
@@ -2352,6 +2402,81 @@ public struct GrantListParams: Codable, Equatable, Sendable {
 }
 
 public typealias GrantListResult = [CapabilityGrant]
+
+// MARK: - execution_job.* (§4.1.5)
+
+public struct ExecutionJobCreateParams: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var sessionID: ULID
+    public var subjectID: String
+    public var command: String
+    public var expiresAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case command
+        case roomID = "room_id"
+        case sessionID = "session_id"
+        case subjectID = "subject_id"
+        case expiresAt = "expires_at"
+    }
+
+    public init(
+        roomID: ULID, sessionID: ULID, subjectID: String, command: String,
+        expiresAt: Date? = nil
+    ) {
+        self.roomID = roomID
+        self.sessionID = sessionID
+        self.subjectID = subjectID
+        self.command = command
+        self.expiresAt = expiresAt
+    }
+}
+
+public struct ExecutionJobResult: Codable, Equatable, Sendable {
+    public var job: WorkerExecutionJob
+    public init(job: WorkerExecutionJob) { self.job = job }
+}
+
+public struct ExecutionJobGetParams: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var jobID: ULID
+    enum CodingKeys: String, CodingKey {
+        case roomID = "room_id"
+        case jobID = "job_id"
+    }
+    public init(roomID: ULID, jobID: ULID) { self.roomID = roomID; self.jobID = jobID }
+}
+
+public struct ExecutionJobListParams: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var subjectID: String?
+    public var state: WorkerExecutionJobState?
+    enum CodingKeys: String, CodingKey {
+        case state
+        case roomID = "room_id"
+        case subjectID = "subject_id"
+    }
+    public init(roomID: ULID, subjectID: String? = nil, state: WorkerExecutionJobState? = nil) {
+        self.roomID = roomID; self.subjectID = subjectID; self.state = state
+    }
+}
+
+public typealias ExecutionJobListResult = [WorkerExecutionJob]
+
+public struct ExecutionJobTransitionParams: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var jobID: ULID
+    public var state: WorkerExecutionJobState
+    public var result: String?
+    enum CodingKeys: String, CodingKey {
+        case state, result
+        case roomID = "room_id"
+        case jobID = "job_id"
+    }
+    public init(roomID: ULID, jobID: ULID, state: WorkerExecutionJobState, result: String? = nil) {
+        self.roomID = roomID; self.jobID = jobID; self.state = state; self.result = result
+    }
+}
 
 // MARK: - presence (§4.1.6)
 

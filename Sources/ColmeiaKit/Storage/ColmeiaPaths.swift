@@ -13,6 +13,13 @@ public struct ColmeiaPaths: Sendable {
         self.init(root: ColmeiaPaths.defaultRoot())
     }
 
+    /// Root normative do layout v2. `defaultRoot()` permanece apontando para o
+    /// Application Support da v1 para não quebrar workspaces existentes.
+    public static func v2Default() -> ColmeiaPaths {
+        ColmeiaPaths(root: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".colmeia", isDirectory: true))
+    }
+
     public static func defaultRoot() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
@@ -34,6 +41,20 @@ public struct ColmeiaPaths: Sendable {
     public var engineLock: URL { root.appendingPathComponent("engine.lock") }
     public var engineLog: URL { root.appendingPathComponent("engine.log") }
     public var configFile: URL { root.appendingPathComponent("config.json") }
+    /// Layout v2 mantém `config.json` para compatibilidade; novos engines podem
+    /// optar pelo TOML sem fazer versões antigas perderem o arquivo conhecido.
+    public var configTOMLFile: URL { root.appendingPathComponent("config.toml") }
+    /// Content-addressable storage compartilhado por workspaces e workers.
+    public var casDir: URL { root.appendingPathComponent("cas", isDirectory: true) }
+    public func casBucket(_ prefix: String) -> URL {
+        casDir.appendingPathComponent(prefix.lowercased(), isDirectory: true)
+    }
+    /// Identidade do nó e CA da sala (arquivos privados, modo 0600 quando criados).
+    public var identitiesDir: URL { root.appendingPathComponent("identities", isDirectory: true) }
+    public var nodeIdentityFile: URL { identitiesDir.appendingPathComponent("node_id.pem") }
+    public var caCertificateFile: URL { identitiesDir.appendingPathComponent("ca_cert.pem") }
+    /// PIDs de agentes que precisam de limpeza no próximo boot após crash.
+    public var pidsLockFile: URL { root.appendingPathComponent("pids.lock") }
     public var workspacesDir: URL { root.appendingPathComponent("workspaces", isDirectory: true) }
     /// Salas multiplayer persistentes (§6.1).
     public var roomsDir: URL { root.appendingPathComponent("rooms", isDirectory: true) }
@@ -55,6 +76,40 @@ public struct ColmeiaPaths: Sendable {
 
     public func documentSnapshotFile(_ workspaceID: ULID) -> URL {
         workspaceDir(workspaceID).appendingPathComponent("document.snapshot.json")
+    }
+
+    // MARK: - Persistência CRDT v2
+
+    public func metaSQLiteFile(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("meta.sqlite")
+    }
+
+    public func crdtOpsWAL(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("crdt_ops.wal")
+    }
+
+    public func crdtSnapshot(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("crdt_snapshot.bin")
+    }
+
+    public func journalsDir(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("journals", isDirectory: true)
+    }
+
+    public func agentJournal(workspace workspaceID: ULID, agent agentID: ULID) -> URL {
+        journalsDir(workspaceID).appendingPathComponent("\(agentID.string).ndjson")
+    }
+
+    public func agentsDir(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("agents", isDirectory: true)
+    }
+
+    public func agentHome(workspace workspaceID: ULID, agent agentID: ULID) -> URL {
+        agentsDir(workspaceID).appendingPathComponent(agentID.string, isDirectory: true)
+    }
+
+    public func agentTemp(workspace workspaceID: ULID, agent agentID: ULID) -> URL {
+        agentHome(workspace: workspaceID, agent: agentID).appendingPathComponent("tmp", isDirectory: true)
     }
 
     public func sessionsDir(_ workspaceID: ULID) -> URL {
@@ -179,12 +234,18 @@ public struct ColmeiaPaths: Sendable {
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         try fm.createDirectory(at: workspacesDir, withIntermediateDirectories: true)
         try fm.createDirectory(at: roomsDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: casDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: identitiesDir, withIntermediateDirectories: true)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: identitiesDir.path)
     }
 
     public func ensureWorkspaceLayout(_ workspaceID: ULID) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: workspaceDir(workspaceID), withIntermediateDirectories: true)
         try fm.createDirectory(at: sessionsDir(workspaceID), withIntermediateDirectories: true)
+        try fm.createDirectory(at: journalsDir(workspaceID), withIntermediateDirectories: true)
+        try fm.createDirectory(at: agentsDir(workspaceID), withIntermediateDirectories: true)
         try fm.createDirectory(at: notesDir(workspaceID), withIntermediateDirectories: true)
         try fm.createDirectory(at: memoryDir(workspaceID), withIntermediateDirectories: true)
         try fm.createDirectory(at: deliveriesDir(workspaceID), withIntermediateDirectories: true)

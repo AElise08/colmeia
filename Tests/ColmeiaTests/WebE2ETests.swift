@@ -79,7 +79,11 @@ private final class HubE2EClient: @unchecked Sendable {
     /// Envia um request e aguarda a response (bloqueante, timeout configurável).
     func call(method: String, params: [String: Any] = [:], timeout: TimeInterval = 10) throws -> [String: Any] {
         requestCounter += 1
-        let id = "e2e-\(requestCounter)"
+        return try callWithID("e2e-\(requestCounter)", method: method, params: params, timeout: timeout)
+    }
+
+    /// Reenvia exatamente o mesmo request id — contrato de replay idempotente.
+    func callWithID(_ id: String, method: String, params: [String: Any] = [:], timeout: TimeInterval = 10) throws -> [String: Any] {
         let req: [String: Any] = ["kind": "request", "id": id, "method": method, "params": params]
         let jsonData = try JSONSerialization.data(withJSONObject: req)
         let reqStr = String(data: jsonData, encoding: .utf8) ?? ""
@@ -233,6 +237,71 @@ struct WebE2ETests {
 
     // MARK: - Testes
 
+    @Test func socketClientFalaWebSocketComHub() async throws {
+        let (hub, port, root) = try startHub()
+        defer { hub.stop(); try? FileManager.default.removeItem(at: root) }
+
+        let client = SocketClient()
+        defer { client.close() }
+        try client.connect(to: "ws://127.0.0.1:\(port)")
+        let hello = try await client.hello(
+            client: "socket-ws-test",
+            author: .humano("humano:socket-ws-test"))
+        #expect(hello.protocolVersion == ColmeiaVersion.protocolVersion)
+        _ = try await client.call(.subscribe)
+    }
+
+    @Test func wssSemCertificadoFalhaFechado() throws {
+        let listener = HubWSSListener(port: 0)
+        do {
+            try listener.start()
+            listener.stop()
+            Issue.record("WSS iniciou sem uma identidade TLS configurada")
+        } catch let error as HubWSSError {
+            switch error {
+            case .tlsRequired, .notSupportedOnPlatform:
+                break
+            }
+        } catch {
+            Issue.record("erro inesperado ao iniciar WSS: \(error)")
+        }
+    }
+
+    @Test func layoutSemanticoDaSalaPersiste() async throws {
+        let (hub, port, root) = try startHub()
+        defer { hub.stop(); try? FileManager.default.removeItem(at: root) }
+
+        let c = try helloAndSubscribe(port: port)
+        let roomID = try createRoom(c)
+        let objectID = ULID.generate().string
+        let update = try c.call(method: "room.layout.update", params: [
+            "room_id": roomID,
+            "object_id": objectID,
+            "position": ["x": 640.0, "y": 280.0]
+        ])
+        let positions = ((update["result"] as? [String: Any])?["positions"] as? [String: Any])
+        #expect((positions?[objectID] as? [String: Any])?["x"] as? Double == 640.0)
+
+        let read = try c.call(method: "room.layout.get", params: ["room_id": roomID])
+        let persisted = ((read["result"] as? [String: Any])?["positions"] as? [String: Any])
+        #expect((persisted?[objectID] as? [String: Any])?["y"] as? Double == 280.0)
+    }
+
+    @Test func replayDoMesmoRequestIDNaoDuplicaSala() async throws {
+        let (hub, port, root) = try startHub()
+        defer { hub.stop(); try? FileManager.default.removeItem(at: root) }
+
+        let c = try helloAndSubscribe(port: port)
+        let first = try c.callWithID("idempotent-room-create", method: "room.create", params: ["name": "uma sala"])
+        let second = try c.callWithID("idempotent-room-create", method: "room.create", params: ["name": "uma sala"])
+        let firstID = ((first["result"] as? [String: Any])?["room"] as? [String: Any])?["id"] as? String
+        let secondID = ((second["result"] as? [String: Any])?["room"] as? [String: Any])?["id"] as? String
+        #expect(firstID != nil)
+        #expect(firstID == secondID)
+        let rooms = try c.call(method: "room.list")
+        #expect((rooms["result"] as? [[String: Any]])?.count == 1)
+    }
+
     @Test func roomCreateVinculaWorkspaceParaBootstrapWeb() async throws {
         let (hub, port, root) = try startHub()
         defer { hub.stop(); try? FileManager.default.removeItem(at: root) }
@@ -275,6 +344,93 @@ struct WebE2ETests {
             "state": "archived", "reason": "E2E"
         ])
         #expect((((archived["result"] as? [String: Any])?["mission"] as? [String: Any])?["state"] as? String) == "archived")
+    }
+
+    @Test func viewerNaoPodeCriarOuAlterarMissaoEFrente() async throws {
+        let (hub, port, root) = try startHub()
+        defer { hub.stop(); try? FileManager.default.removeItem(at: root) }
+
+        let owner = try helloAndSubscribe(port: port)
+        let roomID = try createRoom(owner)
+        let inviteResponse = try owner.call(method: "member.invite", params: [
+            "room_id": roomID, "display_name": "Leitor", "roles": ["viewer"]
+        ])
+        guard let token = ((inviteResponse["result"] as? [String: Any])?["invite_token"] as? String) else {
+            Issue.record("convite de viewer não retornou token")
+            return
+        }
+        let viewer = try HubE2EClient(port: port)
+        let hello = try viewer.call(method: "hello", params: [
+            "protocol_version": ColmeiaVersion.protocolVersion,
+            "client": "web-canvas", "author": "humano:viewer", "token": token
+        ])
+        #expect(hello["ok"] as? Bool == true)
+        let joined = try viewer.call(method: "room.join", params: [
+            "room_id": roomID, "invite_token": token
+        ])
+        #expect(joined["ok"] as? Bool == true)
+
+        let created = try owner.call(method: "mission.create", params: [
+            "room_id": roomID, "title": "Missão protegida", "definition_of_done": "Aceite humano"
+        ])
+        guard let missionID = (((created["result"] as? [String: Any])?["mission"] as? [String: Any])?["id"] as? String) else {
+            Issue.record("missão do owner não retornou ID")
+            return
+        }
+        let deniedMission = try viewer.call(method: "mission.create", params: [
+            "room_id": roomID, "title": "Não deveria criar", "definition_of_done": "nunca"
+        ])
+        #expect(deniedMission["ok"] as? Bool == false)
+        #expect((deniedMission["error"] as? [String: Any])?["name"] as? String == "insufficient_permissions")
+
+        let deniedWorkstream = try viewer.call(method: "workstream.create", params: [
+            "room_id": roomID, "mission_id": missionID, "title": "Não deveria criar",
+            "objective": "nunca", "definition_of_done": "nunca"
+        ])
+        #expect(deniedWorkstream["ok"] as? Bool == false)
+        #expect((deniedWorkstream["error"] as? [String: Any])?["name"] as? String == "insufficient_permissions")
+
+        let deniedGrant = try viewer.call(method: "grant.issue", params: [
+            "room_id": roomID, "subject_id": "agente:worker",
+            "resource": "command:echo seguro", "actions": ["execute"]
+        ])
+        #expect(deniedGrant["ok"] as? Bool == false)
+        #expect((deniedGrant["error"] as? [String: Any])?["name"] as? String == "insufficient_permissions")
+        let deniedGrantList = try viewer.call(method: "grant.list", params: [
+            "room_id": roomID, "subject_id": "agente:worker", "active_only": true
+        ])
+        #expect(deniedGrantList["ok"] as? Bool == false)
+        #expect((deniedGrantList["error"] as? [String: Any])?["name"] as? String == "insufficient_permissions")
+        let ownGrantList = try viewer.call(method: "grant.list", params: [
+            "room_id": roomID, "subject_id": "humano:viewer", "active_only": true
+        ])
+        #expect(ownGrantList["ok"] as? Bool == true)
+        #expect((ownGrantList["result"] as? [[String: Any]])?.isEmpty == true)
+
+        let workerID = "agente:\(ULID.generate().string)"
+        let sessionResponse = try owner.call(method: "agent_session.create", params: [
+            "room_id": roomID, "workspace_id": ULID.generate().string,
+            "node_id": ULID.generate().string, "objective": "Job tipado"
+        ])
+        guard let sessionID = ((sessionResponse["result"] as? [String: Any])?["agent_session"] as? [String: Any])?["id"] as? String else {
+            Issue.record("agent_session.create não retornou ID para job")
+            return
+        }
+        let ownerGrant = try owner.call(method: "grant.issue", params: [
+            "room_id": roomID, "subject_id": workerID,
+            "resource": "command:echo seguro", "actions": ["execute"]
+        ])
+        #expect(ownerGrant["ok"] as? Bool == true)
+        let createdJob = try owner.call(method: "execution_job.create", params: [
+            "room_id": roomID, "session_id": sessionID, "subject_id": workerID,
+            "command": "echo seguro"
+        ])
+        #expect(createdJob["ok"] as? Bool == true)
+        let deniedJobList = try viewer.call(method: "execution_job.list", params: [
+            "room_id": roomID, "subject_id": workerID, "state": "queued"
+        ])
+        #expect(deniedJobList["ok"] as? Bool == false)
+        #expect((deniedJobList["error"] as? [String: Any])?["name"] as? String == "insufficient_permissions")
     }
 
     @Test func noteReplacePersisteEBroadcastSemEngineRemoto() async throws {

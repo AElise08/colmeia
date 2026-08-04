@@ -183,9 +183,16 @@ struct EngineAcceptanceTests {
             return message.direcao == .recebida && message.messageID == sent.messageID
                 && message.contraparte == a.id && message.texto == text && event.author == agentA
         })
-        #expect(destinationEvents.contains { event in
-            guard case .input(let input) = event.payload else { return false }
-            return event.author == agentA && Data(base64Encoded: input.dataB64) == Data((text + "\r").utf8)
+        let destinationInputs = destinationEvents.compactMap { event -> (Author, Data)? in
+            guard case .input(let input) = event.payload,
+                  let data = Data(base64Encoded: input.dataB64) else { return nil }
+            return (event.author, data)
+        }
+        #expect(destinationInputs.contains { author, data in
+            author == agentA && data == Data(text.utf8)
+        })
+        #expect(destinationInputs.contains { author, data in
+            author == agentA && data == Data([0x0D])
         })
         let snapshot = try await client.call(
             .docSnapshot, params: DocSnapshotParams(workspaceID: workspace.id), expecting: DocSnapshotResult.self).documentSnapshot

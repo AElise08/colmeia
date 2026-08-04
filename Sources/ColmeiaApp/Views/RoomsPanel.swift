@@ -38,6 +38,12 @@ struct RoomsPanel: View {
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.secondary)
                         }
+                        if hubConnection.pendingOutboxCount > 0 {
+                            Label("\(hubConnection.pendingOutboxCount) pendente(s)", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                                .help("Alterações da Sala aguardando reconexão")
+                        }
                         Spacer()
                         Button("Alterar") {
                             mostrandoConfigHub = true
@@ -609,6 +615,28 @@ struct RoomDetailView: View {
                 events.sort { $0.logicalClock < $1.logicalClock }
                 roomSeq = max(roomSeq, payload.event.logicalClock)
             }
+        case .missionChanged:
+            guard let payload = try? event.decodeParams(MissionChangedTopicPayload.self),
+                  payload.roomID == room.id else { return }
+            if let index = missions.firstIndex(where: { $0.id == payload.mission.id }) {
+                missions[index] = payload.mission
+            } else {
+                missions.append(payload.mission)
+            }
+            store.applyRemoteMissionEvent(event)
+        case .workstreamChanged:
+            guard let payload = try? event.decodeParams(WorkstreamChangedTopicPayload.self),
+                  payload.roomID == room.id else { return }
+            if let index = workstreams.firstIndex(where: { $0.id == payload.workstream.id }) {
+                workstreams[index] = payload.workstream
+            } else {
+                workstreams.append(payload.workstream)
+            }
+            store.applyRemoteMissionEvent(event)
+        case .decisionChanged:
+            guard let payload = try? event.decodeParams(DecisionChangedTopicPayload.self),
+                  payload.roomID == room.id else { return }
+            store.applyRemoteDecisionEvent(event)
         default:
             break
         }
@@ -627,6 +655,10 @@ struct RoomDetailView: View {
                 params: WorkstreamListParams(roomID: room.id),
                 expecting: WorkstreamListResult.self
             )
+            // Mantém a visão Missão do Canvas alinhada imediatamente após uma
+            // criação/transição feita no painel multiplayer, inclusive quando
+            // a Sala vive em um Hub remoto ao Engine local.
+            store.updateMissionSnapshot(missions, workstreams: workstreams)
         } catch {
             erro = "Falha ao carregar missões: \(error)"
         }

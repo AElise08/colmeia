@@ -7,11 +7,14 @@ public struct HubOutboxEntry: Codable, Equatable, Sendable {
     public var enqueuedAt: Date
     public var method: ColmeiaMethod
     public var paramsJSON: Data
+    /// Reutilizado no replay para que o Hub possa devolver a resposta já
+    /// aplicada quando a conexão caiu depois da mutação.
+    public var requestID: String?
     public var tentativas: Int
     public var ultimoErro: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, method, tentativas
+        case id, method, requestID = "request_id", tentativas
         case enqueuedAt = "enqueued_at"
         case paramsJSON = "params_json"
         case ultimoErro = "ultimo_erro"
@@ -22,6 +25,7 @@ public struct HubOutboxEntry: Codable, Equatable, Sendable {
         enqueuedAt: Date = Date(),
         method: ColmeiaMethod,
         paramsJSON: Data,
+        requestID: String? = nil,
         tentativas: Int = 0,
         ultimoErro: String? = nil
     ) {
@@ -29,6 +33,7 @@ public struct HubOutboxEntry: Codable, Equatable, Sendable {
         self.enqueuedAt = enqueuedAt
         self.method = method
         self.paramsJSON = paramsJSON
+        self.requestID = requestID
         self.tentativas = tentativas
         self.ultimoErro = ultimoErro
     }
@@ -49,8 +54,12 @@ public final class HubOutbox: @unchecked Sendable {
 
     /// Enfileira a entrada (durable: fsync após escrita).
     @discardableResult
-    public func enqueue(method: ColmeiaMethod, paramsJSON: Data) throws -> HubOutboxEntry {
-        let entry = HubOutboxEntry(method: method, paramsJSON: paramsJSON)
+    public func enqueue(
+        method: ColmeiaMethod,
+        paramsJSON: Data,
+        requestID: String? = nil
+    ) throws -> HubOutboxEntry {
+        let entry = HubOutboxEntry(method: method, paramsJSON: paramsJSON, requestID: requestID)
         lock.lock(); defer { lock.unlock() }
         entries.append(entry)
         try persistLocked()

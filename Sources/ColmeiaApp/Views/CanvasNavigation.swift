@@ -27,23 +27,27 @@ import ColmeiaKit
 ///     topo-esquerda do CanvasSpace/scaleEffect do SwiftUI (ver CanvasMath).
 struct CanvasEventBridge: NSViewRepresentable {
     let store: AppStore
+    let onInteractionChanged: (Bool) -> Void
     let onPointerMove: (Ponto) -> Void
 
     func makeNSView(context: Context) -> NavegacaoMonitorView {
         let view = NavegacaoMonitorView()
         view.store = store
+        view.onInteractionChanged = onInteractionChanged
         view.onPointerMove = onPointerMove
         return view
     }
 
     func updateNSView(_ nsView: NavegacaoMonitorView, context: Context) {
         nsView.store = store
+        nsView.onInteractionChanged = onInteractionChanged
         nsView.onPointerMove = onPointerMove
     }
 }
 
 final class NavegacaoMonitorView: NSView {
     weak var store: AppStore?
+    var onInteractionChanged: ((Bool) -> Void)?
     var onPointerMove: ((Ponto) -> Void)?
 
     private var monitors: [Any] = []
@@ -55,6 +59,8 @@ final class NavegacaoMonitorView: NSView {
     private var maoBase: Viewport?
     private var maoOrigemTela: CGPoint = .zero
     private var cursorForcado = false
+    private var interactionActive = false
+    private var interactionEndWorkItem: DispatchWorkItem?
 
     private static let teclaEspaco: UInt16 = 49
     /// COLMEIA_NAV_DEBUG=1 → traça decisões de scroll/tecla no stderr (smoke/diagnóstico).
@@ -83,6 +89,7 @@ final class NavegacaoMonitorView: NSView {
     deinit {
         // Teardown normal acontece em viewDidMoveToWindow(nil); rede de segurança.
         for monitor in monitors { NSEvent.removeMonitor(monitor) }
+        interactionEndWorkItem?.cancel()
         if let observer = resignObserver { NotificationCenter.default.removeObserver(observer) }
     }
 
@@ -138,6 +145,7 @@ final class NavegacaoMonitorView: NSView {
             resignObserver = nil
         }
         sairDoModoMao()
+        endInteraction()
     }
 
     /// Ponto do evento em coordenadas da NOSSA janela; nil quando o evento
@@ -170,6 +178,8 @@ final class NavegacaoMonitorView: NSView {
 
     private func handleMagnify(_ event: NSEvent) -> NSEvent? {
         guard let store, let p = pontoNoCanvas(event) else { return event }
+        beginInteraction()
+        scheduleInteractionEnd()
         let fator = 1 + Double(event.magnification)
         if fator > 0 {
             store.zoom(by: fator, ancoraTela: Ponto(x: p.x, y: p.y))
@@ -192,11 +202,15 @@ final class NavegacaoMonitorView: NSView {
                 ? Double(event.scrollingDeltaY)
                 : Double(event.scrollingDeltaY) * 10
             if delta != 0 {
+                beginInteraction()
+                scheduleInteractionEnd()
                 store.zoom(by: exp2(delta / 250), ancoraTela: Ponto(x: p.x, y: p.y))
             }
             return nil
         }
         if mods.contains(.option) {
+            beginInteraction()
+            scheduleInteractionEnd()
             store.panBy(telaDX: Double(event.scrollingDeltaX), telaDY: Double(event.scrollingDeltaY))
             return nil
         }
@@ -209,6 +223,8 @@ final class NavegacaoMonitorView: NSView {
             return event
         }
         // Fundo vazio: two-finger scroll = pan (comportamento clássico mantido).
+        beginInteraction()
+        scheduleInteractionEnd()
         store.panBy(telaDX: Double(event.scrollingDeltaX), telaDY: Double(event.scrollingDeltaY))
         return nil
     }
@@ -282,6 +298,7 @@ final class NavegacaoMonitorView: NSView {
     private func handleMouseDown(_ event: NSEvent) -> NSEvent? {
         publishPointer(event)
         guard modoMao, let store, let p = pontoNoCanvas(event) else { return event }
+        beginInteraction()
         maoArrastando = true
         maoBase = store.viewport
         maoOrigemTela = p
@@ -293,6 +310,7 @@ final class NavegacaoMonitorView: NSView {
         publishPointer(event)
         guard maoArrastando, let store, let base = maoBase,
               let pontoJanela = pontoNaJanela(event) else { return event }
+        beginInteraction()
         // Sem clamp ao bounds: o drag pode sair do canvas e continuar valendo.
         let p = convert(pontoJanela, from: nil)
         var v = base
@@ -306,6 +324,7 @@ final class NavegacaoMonitorView: NSView {
         guard maoArrastando else { return event }
         maoArrastando = false
         maoBase = nil
+        endInteraction()
         aplicarCursor()
         return nil
     }
@@ -337,6 +356,34 @@ final class NavegacaoMonitorView: NSView {
         modoMao = false
         maoArrastando = false
         maoBase = nil
+        endInteraction()
         aplicarCursor()
+    }
+
+    // MARK: - Modo de interação de alta performance
+
+    private func beginInteraction() {
+        interactionEndWorkItem?.cancel()
+        if !interactionActive {
+            interactionActive = true
+            onInteractionChanged?(true)
+        }
+    }
+
+    private func scheduleInteractionEnd() {
+        interactionEndWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.endInteraction()
+        }
+        interactionEndWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
+    }
+
+    private func endInteraction() {
+        interactionEndWorkItem?.cancel()
+        interactionEndWorkItem = nil
+        guard interactionActive else { return }
+        interactionActive = false
+        onInteractionChanged?(false)
     }
 }

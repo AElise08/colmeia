@@ -63,8 +63,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
-		<!-- Hub remoto em ws:// (não-TLS) é o transporte padrão do colmeia-hub
-		     em alpha; sem isto a UI fica eternamente em "Reconectando ao Hub"
+		<!-- Hub remoto em ws:// (não-TLS) é o transporte de desenvolvimento do
+		     colmeia-hub; sem isto a UI fica eternamente em "Reconectando ao Hub"
 		     enquanto o colmeia-sync (socket TCP cru) continua funcionando. -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
@@ -116,7 +116,33 @@ else
   echo "ícone: geração falhou (app fica sem ícone)"
 fi
 
-# Assinatura ad-hoc: sem ela o macOS moderno mata o binário ao abrir via `open`.
-codesign --force --deep --sign - "$APP"
+# Por padrão usamos assinatura ad-hoc para desenvolvimento local. Para
+# distribuição, informe uma identidade Apple de Developer ID e, opcionalmente,
+# um perfil salvo no `notarytool`:
+#
+#   COLMEIA_CODESIGN_IDENTITY='Developer ID Application: Equipe (TEAMID)' \
+#   COLMEIA_NOTARY_PROFILE='colmeia-release' ./scripts/build-app.sh
+#
+# O script nunca tenta notarizar silenciosamente: sem o perfil ele apenas
+# produz o app assinado com a identidade escolhida.
+SIGNING_IDENTITY="${COLMEIA_CODESIGN_IDENTITY:--}"
+if [ "$SIGNING_IDENTITY" = "-" ]; then
+  # Assinatura ad-hoc: suficiente para abrir localmente, não para distribuição.
+  codesign --force --deep --sign - "$APP"
+else
+  codesign --force --deep --options runtime --timestamp \
+    --sign "$SIGNING_IDENTITY" "$APP"
+fi
+
+NOTARY_PROFILE="${COLMEIA_NOTARY_PROFILE:-}"
+if [ -n "$NOTARY_PROFILE" ]; then
+  if [ "$SIGNING_IDENTITY" = "-" ]; then
+    echo "erro: COLMEIA_NOTARY_PROFILE exige COLMEIA_CODESIGN_IDENTITY" >&2
+    exit 1
+  fi
+  xcrun notarytool submit "$APP" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$APP"
+  xcrun stapler validate "$APP"
+fi
 
 echo "OK: $APP"

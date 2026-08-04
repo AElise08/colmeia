@@ -10,12 +10,16 @@ public final class RoomStore: @unchecked Sendable {
     private var members: [String: Member] = [:]
     private var agentSessions: [ULID: AgentSession] = [:]
     private var grants: [ULID: CapabilityGrant] = [:]
+    private var executionJobs: [ULID: WorkerExecutionJob] = [:]
     private var leases: [ULID: LeaseRecord] = [:]
     private var events: [CollaborativeSessionEvent] = []
     private var eventCount: UInt64 = 0
     private var eventIDs: Set<ULID> = []
     private var presences: [String: Presence] = [:]
     private var inviteTokens: [String: InviteToken] = [:]
+    /// Posições dos objetos semânticos: estado colaborativo durável, separado
+    /// do conteúdo operacional de Missão/Frente/Decisão.
+    private var semanticLayout: [String: Ponto] = [:]
 
     /// Lease de condução expira em 5 min (300 s) se ausente.
     public static let leaseTTL: TimeInterval = 300
@@ -37,10 +41,12 @@ public final class RoomStore: @unchecked Sendable {
         self.members = Dictionary(uniqueKeysWithValues: state.members.map { ($0.id, $0) })
         self.agentSessions = Dictionary(uniqueKeysWithValues: state.agentSessions.map { ($0.id, $0) })
         self.grants = Dictionary(uniqueKeysWithValues: state.grants.map { ($0.id, $0) })
+        self.executionJobs = Dictionary(uniqueKeysWithValues: state.executionJobs.map { ($0.id, $0) })
         self.events = state.events
         self.eventCount = state.roomSeq
         self.eventIDs = Set(state.events.map(\.id))
         self.inviteTokens = Dictionary(uniqueKeysWithValues: (state.inviteTokens).map { ($0.token, $0) })
+        self.semanticLayout = state.semanticLayout ?? [:]
     }
 
     /// Snapshot atômico do estado durável do Hub local. Leases e presença são
@@ -52,9 +58,11 @@ public final class RoomStore: @unchecked Sendable {
             members: Array(members.values),
             agentSessions: Array(agentSessions.values),
             grants: Array(grants.values),
+            executionJobs: Array(executionJobs.values),
             events: events,
             roomSeq: eventCount,
-            inviteTokens: Array(inviteTokens.values))
+            inviteTokens: Array(inviteTokens.values),
+            semanticLayout: semanticLayout)
         lock.unlock()
         try FileManager.default.createDirectory(at: paths.roomDir(roomID), withIntermediateDirectories: true)
         try AtomicJSON.write(state, to: paths.roomSnapshotFile(roomID))
@@ -338,6 +346,21 @@ public final class RoomStore: @unchecked Sendable {
             roomSeq: eventCount)
     }
 
+    // MARK: - Semantic layout
+
+    public func getSemanticLayout() -> [String: Ponto] {
+        lock.lock(); defer { lock.unlock() }
+        return semanticLayout
+    }
+
+    @discardableResult
+    public func updateSemanticLayout(objectID: ULID, position: Ponto) -> [String: Ponto] {
+        lock.lock(); defer { lock.unlock() }
+        semanticLayout[objectID.string] = position
+        room.updatedAt = Date()
+        return semanticLayout
+    }
+
     // MARK: - State Machine (§4.2)
 
     /// Transições válidas entre estados. Rejeita transições inválidas.
@@ -589,6 +612,49 @@ public final class RoomStore: @unchecked Sendable {
         return result.sorted { $0.expiresAt < $1.expiresAt }
     }
 
+    // MARK: - Typed execution jobs
+
+    public func createExecutionJob(
+        sessionID: ULID, subjectID: String, command: String,
+        expiresAt: Date?, requestedBy: Author, now: Date = Date()
+    ) throws -> WorkerExecutionJob {
+        lock.lock(); defer { lock.unlock() }
+        guard agentSessions[sessionID] != nil else {
+            throw RoomStoreError.agentSessionNotFound(sessionID)
+        }
+        let job = try WorkerExecutionJob(
+            roomID: roomID, sessionID: sessionID, subjectID: subjectID,
+            command: command, requestedBy: requestedBy,
+            createdAt: now, expiresAt: expiresAt ?? now.addingTimeInterval(300))
+        executionJobs[job.id] = job
+        return job
+    }
+
+    public func getExecutionJob(id: ULID) -> WorkerExecutionJob? {
+        lock.lock(); defer { lock.unlock() }
+        return executionJobs[id]
+    }
+
+    public func getExecutionJobs(
+        subjectID: String? = nil, state: WorkerExecutionJobState? = nil
+    ) -> [WorkerExecutionJob] {
+        lock.lock(); defer { lock.unlock() }
+        return executionJobs.values.filter {
+            (subjectID == nil || $0.subjectID == subjectID)
+                && (state == nil || $0.state == state)
+        }.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    public func transitionExecutionJob(
+        id: ULID, to state: WorkerExecutionJobState, result: String? = nil
+    ) throws -> WorkerExecutionJob {
+        lock.lock(); defer { lock.unlock() }
+        guard var job = executionJobs[id] else { throw RoomStoreError.executionJobNotFound(id) }
+        try job.transition(to: state, result: result)
+        executionJobs[id] = job
+        return job
+    }
+
     // MARK: - Leases
 
     public func acquireLease(sessionID: ULID, scope: HandoffScope, memberID: String, now: Date = Date()) -> LeaseResult {
@@ -669,15 +735,49 @@ private struct PersistedState: Codable {
     var members: [Member]
     var agentSessions: [AgentSession]
     var grants: [CapabilityGrant]
+    var executionJobs: [WorkerExecutionJob]
     var events: [CollaborativeSessionEvent]
     var roomSeq: UInt64
     var inviteTokens: [InviteToken]
+    var semanticLayout: [String: Ponto]?
 
     enum CodingKeys: String, CodingKey {
         case room, members, grants, events
         case agentSessions = "agent_sessions"
+        case executionJobs = "execution_jobs"
         case roomSeq = "room_seq"
         case inviteTokens = "invite_tokens"
+        case semanticLayout = "semantic_layout"
+    }
+
+    init(
+        room: Room, members: [Member], agentSessions: [AgentSession],
+        grants: [CapabilityGrant], executionJobs: [WorkerExecutionJob],
+        events: [CollaborativeSessionEvent], roomSeq: UInt64, inviteTokens: [InviteToken],
+        semanticLayout: [String: Ponto] = [:]
+    ) {
+        self.room = room
+        self.members = members
+        self.agentSessions = agentSessions
+        self.grants = grants
+        self.executionJobs = executionJobs
+        self.events = events
+        self.roomSeq = roomSeq
+        self.inviteTokens = inviteTokens
+        self.semanticLayout = semanticLayout
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        room = try c.decode(Room.self, forKey: .room)
+        members = try c.decode([Member].self, forKey: .members)
+        agentSessions = try c.decodeIfPresent([AgentSession].self, forKey: .agentSessions) ?? []
+        grants = try c.decodeIfPresent([CapabilityGrant].self, forKey: .grants) ?? []
+        executionJobs = try c.decodeIfPresent([WorkerExecutionJob].self, forKey: .executionJobs) ?? []
+        events = try c.decodeIfPresent([CollaborativeSessionEvent].self, forKey: .events) ?? []
+        roomSeq = try c.decodeIfPresent(UInt64.self, forKey: .roomSeq) ?? 0
+        inviteTokens = try c.decodeIfPresent([InviteToken].self, forKey: .inviteTokens) ?? []
+        semanticLayout = try c.decodeIfPresent([String: Ponto].self, forKey: .semanticLayout) ?? [:]
     }
 }
 
@@ -709,6 +809,7 @@ public enum RoomStoreError: Error, Equatable, Sendable, LocalizedError {
     case grantNotFound(ULID)
     case grantExpired(ULID)
     case grantAlreadyRevoked(ULID)
+    case executionJobNotFound(ULID)
     case insufficientPermissions
     case idempotencyConflict
     case leaseInvalid
@@ -732,6 +833,7 @@ public enum RoomStoreError: Error, Equatable, Sendable, LocalizedError {
         case .grantNotFound(let id): return "grant não encontrado: \(id.string)"
         case .grantExpired(let id): return "grant expirado: \(id.string)"
         case .grantAlreadyRevoked(let id): return "grant já revogado: \(id.string)"
+        case .executionJobNotFound(let id): return "job de execução não encontrado: \(id.string)"
         case .insufficientPermissions: return "permissões insuficientes"
         case .idempotencyConflict: return "conflito de idempotência"
         case .leaseInvalid: return "lease inválido"

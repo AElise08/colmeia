@@ -31,6 +31,14 @@ struct WorkspaceHistorySearchResult: Identifiable, Equatable, Sendable {
     let symbol: String
 }
 
+struct MissionTimelineItem: Identifiable, Equatable, Sendable {
+    let id: String
+    let date: Date
+    let title: String
+    let detail: String
+    let symbol: String
+}
+
 /// Estado espelhado do engine + intenções da usuária. Toda mutação do documento sai
 /// por `doc.apply` (§7.1) — o store aplica otimista e reconcilia pelo eco `document.op`
 /// (dedupe por `op_id`). Pilha de undo é local à sessão de UI (§7.3).
@@ -75,6 +83,17 @@ final class AppStore: ObservableObject {
     @Published var showRoutines = false
     /// §7.1 — decisões open carregadas das salas conhecidas.
     @Published private(set) var openDecisions: [Decision] = []
+    /// Agregado da sala vinculada ao workspace aberto. A visão de Missão do
+    /// Canvas lê daqui sem duplicar o estado canônico do Hub.
+    @Published private(set) var missions: [Mission] = []
+    @Published private(set) var workstreams: [Workstream] = []
+    /// Layout dos frames semânticos. Em Sala, o Hub é a fonte canônica; no uso
+    /// local sem Sala, o mesmo mapa é persistido como preferência da instalação.
+    @Published private(set) var semanticObjectPositions: [ULID: Ponto] = [:]
+    /// Evita recarregar o layout local em cada atualização remota da missão.
+    /// Sem esta guarda, um drag ainda em memória poderia ser sobrescrito pelo
+    /// próximo evento `mission.changed`.
+    private var semanticLayoutWorkspaceID: ULID?
     /// §7.1 — rótulo de sincronização da sala (online/offline/erro).
     @Published private(set) var roomSyncLabel: String = "Local · engine"
     /// §6.3 — modo de visão do canvas (livre / equipe / atenção / execução).
@@ -105,6 +124,8 @@ final class AppStore: ObservableObject {
     /// otimista da tela (§6.7).
     private var documentRequestTail: Task<Void, Never>?
     private var viewportTask: Task<Void, Never>?
+    private var canvasEventFlushTask: Task<Void, Never>?
+    private var pendingCanvasEvents: [EventMessage] = []
     private var avisoTask: Task<Void, Never>?
     private(set) var draggingNodeID: ULID?
     private var dragBase: Ponto?
@@ -164,6 +185,17 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Vinculação semântica disponível hoje: uma Frente pode apontar para um
+    /// agente (o próprio id do nó terminal). Frentes ainda sem assignee não
+    /// escondem o restante do workspace, mantendo a visão útil durante o
+    /// planejamento inicial da missão.
+    func matchesSelectedMission(_ node: Node) -> Bool {
+        guard canvasViewMode == .missao, canvasFiltroMissao != nil else { return true }
+        let assignedNodeIDs = Set(canvasWorkstreams.compactMap { $0.assignee?.agentID })
+        guard !assignedNodeIDs.isEmpty else { return true }
+        return assignedNodeIDs.contains(node.id)
+    }
+
     // MARK: - Sincronização pós-(re)conexão
 
     private func resync() async {
@@ -177,6 +209,7 @@ final class AppStore: ObservableObject {
         } else if let first = workspaces.first {
             await open(workspaceID: first.id)
         }
+        await refreshMissions()
         await refreshDecisions()
         await refreshRoomSync()
     }
@@ -373,6 +406,10 @@ final class AppStore: ObservableObject {
             watchdogAlerts = []
             workerArchives = []
             agentMessages = []
+            missions = []
+            workstreams = []
+            semanticObjectPositions = [:]
+            semanticLayoutWorkspaceID = nil
             workspaceHealth = nil
             delegations = []
 
@@ -416,6 +453,11 @@ final class AppStore: ObservableObject {
             workspaceHealth = nil
             nodes.removeAll()
             connections.removeAll()
+            missions.removeAll()
+            workstreams.removeAll()
+            semanticObjectPositions.removeAll()
+            semanticLayoutWorkspaceID = nil
+            canvasFiltroMissao = nil
             selection = nil
             avisoInfo = "Workspace fechado; sessões permanecem disponíveis para retomar."
         } catch {
@@ -507,6 +549,7 @@ final class AppStore: ObservableObject {
         await refreshDeliveries()
         await refreshWatchdog()
         await refreshWorkerArchives()
+        await refreshMissions()
         await refreshDecisions()
         await refreshRoomSync()
     }
@@ -604,6 +647,220 @@ final class AppStore: ObservableObject {
             openDecisions = collected.sorted { ($0.dueAt ?? .distantFuture) < ($1.dueAt ?? .distantFuture) }
         } catch {
             // engine indisponível — mantém cache
+        }
+    }
+
+    /// Recarrega o agregado Missão → Frente da sala associada ao workspace.
+    /// Salas de outros workspaces ficam fora do Canvas atual; se não houver
+    /// sala vinculada, o estado é explicitamente vazio para não exibir dados
+    /// de uma sessão anterior.
+    func refreshMissions() async {
+        guard let workspaceID = workspace?.id else {
+            missions = []
+            workstreams = []
+            return
+        }
+        do {
+            let rooms: RoomListResult = try await connection.call(
+                .roomList, expecting: RoomListResult.self)
+            let linkedRooms = rooms.filter {
+                $0.state == .active && $0.workspaceID == workspaceID
+            }
+            var loadedMissions: [Mission] = []
+            var loadedWorkstreams: [Workstream] = []
+            for room in linkedRooms {
+                let roomMissions: MissionListResult = try await connection.call(
+                    .missionList,
+                    params: MissionListParams(roomID: room.id),
+                    expecting: MissionListResult.self)
+                loadedMissions.append(contentsOf: roomMissions)
+                for mission in roomMissions {
+                    let fronts: WorkstreamListResult = try await connection.call(
+                        .workstreamList,
+                        params: WorkstreamListParams(roomID: room.id, missionID: mission.id),
+                        expecting: WorkstreamListResult.self)
+                    loadedWorkstreams.append(contentsOf: fronts)
+                }
+            }
+            missions = loadedMissions.sorted { lhs, rhs in
+                lhs.updatedAt == rhs.updatedAt ? lhs.id < rhs.id : lhs.updatedAt > rhs.updatedAt
+            }
+            workstreams = loadedWorkstreams.sorted { lhs, rhs in
+                lhs.updatedAt == rhs.updatedAt ? lhs.id < rhs.id : lhs.updatedAt > rhs.updatedAt
+            }
+            if let filtro = canvasFiltroMissao, !missions.contains(where: { $0.id == filtro }) {
+                canvasFiltroMissao = nil
+            }
+        } catch {
+            // Em reconexão, conserva o último agregado exibível.
+            Self.log.error("mission/workstream refresh falhou: \(String(describing: error))")
+        }
+    }
+
+    /// Injeta o snapshot obtido pelo painel multiplayer quando a Sala está em
+    /// um Hub remoto (nesse caso o Engine local não conhece necessariamente a
+    /// sala). O próximo refresh canônico substitui este cache normalmente.
+    func updateMissionSnapshot(_ missions: [Mission], workstreams: [Workstream]) {
+        self.missions = missions.sorted { $0.updatedAt > $1.updatedAt }
+        self.workstreams = workstreams.sorted { $0.updatedAt > $1.updatedAt }
+        loadSemanticObjectPositionsIfNeeded()
+        if let filtro = canvasFiltroMissao, !self.missions.contains(where: { $0.id == filtro }) {
+            canvasFiltroMissao = nil
+        }
+    }
+
+    func semanticObjectPosition(_ id: ULID, index: Int = 0) -> Ponto {
+        if let position = semanticObjectPositions[id] { return position }
+        return Ponto(x: 80 + Double(index % 3) * 440, y: 100 + Double(index / 3) * 300)
+    }
+
+    func moveSemanticObject(_ id: ULID, to position: Ponto, persist: Bool = false) {
+        guard CanvasMath.posicaoSana(position) else { return }
+        semanticObjectPositions[id] = position
+        if persist { persistSemanticObjectPositions() }
+    }
+
+    /// Substitui o layout recebido do Hub, preservando apenas ULIDs e posições
+    /// dentro dos limites do canvas. O fallback local continua disponível
+    /// quando não há uma Sala ativa.
+    func replaceSemanticObjectPositions(_ positions: [String: Ponto]) {
+        semanticObjectPositions = positions.reduce(into: [:]) { result, entry in
+            guard let id = ULID(entry.key), CanvasMath.posicaoSana(entry.value) else { return }
+            result[id] = entry.value
+        }
+    }
+
+    private func semanticLayoutKey(for workspaceID: ULID) -> String {
+        "colmeia.semantic-layout.\(workspaceID.string)"
+    }
+
+    private func loadSemanticObjectPositionsIfNeeded() {
+        guard let workspaceID = workspace?.id else { return }
+        guard semanticLayoutWorkspaceID != workspaceID else { return }
+        semanticLayoutWorkspaceID = workspaceID
+        semanticObjectPositions = [:]
+        let key = semanticLayoutKey(for: workspaceID)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? ColmeiaJSON.decoder().decode([String: Ponto].self, from: data)
+        else { return }
+        semanticObjectPositions = decoded.reduce(into: [:]) { result, entry in
+            if let id = ULID(entry.key) { result[id] = entry.value }
+        }
+    }
+
+    private func persistSemanticObjectPositions() {
+        guard let workspaceID = workspace?.id else { return }
+        let encoded = semanticObjectPositions.reduce(into: [String: Ponto]()) {
+            $0[$1.key.string] = $1.value
+        }
+        if let data = try? ColmeiaJSON.encoder().encode(encoded) {
+            UserDefaults.standard.set(data, forKey: semanticLayoutKey(for: workspaceID))
+        }
+    }
+
+    /// Aplica o delta semântico recebido do Hub remoto. O Hub envia o
+    /// agregado completo para que a UI não dependa de uma segunda leitura
+    /// durante uma reconexão.
+    func applyRemoteMissionEvent(_ event: EventMessage) {
+        switch event.knownTopic {
+        case .missionChanged:
+            guard let payload = try? event.decodeParams(MissionChangedTopicPayload.self) else { return }
+            if let index = missions.firstIndex(where: { $0.id == payload.mission.id }) {
+                missions[index] = payload.mission
+            } else {
+                missions.append(payload.mission)
+            }
+            missions.sort { $0.updatedAt > $1.updatedAt }
+            if let filtro = canvasFiltroMissao, !missions.contains(where: { $0.id == filtro }) {
+                canvasFiltroMissao = nil
+            }
+        case .workstreamChanged:
+            guard let payload = try? event.decodeParams(WorkstreamChangedTopicPayload.self) else { return }
+            if let index = workstreams.firstIndex(where: { $0.id == payload.workstream.id }) {
+                workstreams[index] = payload.workstream
+            } else {
+                workstreams.append(payload.workstream)
+            }
+            workstreams.sort { $0.updatedAt > $1.updatedAt }
+        default:
+            break
+        }
+    }
+
+    /// Aplica uma decisão recebida pelo Hub sem depender de uma leitura do
+    /// Engine local (que pode nem conhecer a sala remota).
+    func applyRemoteDecisionEvent(_ event: EventMessage) {
+        guard let payload = try? event.decodeParams(DecisionChangedTopicPayload.self) else { return }
+        if payload.decision.state == .open {
+            if let index = openDecisions.firstIndex(where: { $0.id == payload.decision.id }) {
+                openDecisions[index] = payload.decision
+            } else {
+                openDecisions.append(payload.decision)
+            }
+        } else {
+            openDecisions.removeAll { $0.id == payload.decision.id }
+        }
+        openDecisions.sort { ($0.dueAt ?? .distantFuture) < ($1.dueAt ?? .distantFuture) }
+    }
+
+    func applyRemoteSemanticLayoutEvent(_ event: EventMessage) {
+        guard let payload = try? event.decodeParams(RoomLayoutChangedTopicPayload.self) else { return }
+        replaceSemanticObjectPositions(payload.positions)
+    }
+
+    var canvasMission: Mission? {
+        guard let id = canvasFiltroMissao else { return nil }
+        return missions.first { $0.id == id }
+    }
+
+    var canvasWorkstreams: [Workstream] {
+        guard let mission = canvasMission else { return [] }
+        return workstreams.filter { $0.missionID == mission.id }
+    }
+
+    var canvasMissionDecisions: [Decision] {
+        guard let mission = canvasMission else { return [] }
+        return openDecisions.filter { $0.missionID == mission.id }
+    }
+
+    var canvasMissionDeliveries: [Delivery] {
+        guard let mission = canvasMission else { return [] }
+        return deliveries.filter { $0.missionID == mission.id }
+    }
+
+    /// Linha do tempo derivada do agregado já sincronizado. Ela conecta o
+    /// briefing (missão/frentes), decisões abertas e entregas sem inventar uma
+    /// segunda fonte de eventos no cliente.
+    var canvasMissionTimeline: [MissionTimelineItem] {
+        guard let mission = canvasMission else { return [] }
+        var items = [MissionTimelineItem(
+            id: "mission-\(mission.id.string)", date: mission.updatedAt,
+            title: mission.title,
+            detail: "Missão · \(mission.state.rawValue.replacingOccurrences(of: "_", with: " "))",
+            symbol: "flag.checkered")]
+        items += canvasWorkstreams.map {
+            MissionTimelineItem(
+                id: "workstream-\($0.id.string)", date: $0.updatedAt,
+                title: $0.title,
+                detail: "Frente · \($0.state.rawValue.replacingOccurrences(of: "_", with: " "))",
+                symbol: "arrow.triangle.branch")
+        }
+        items += canvasMissionDecisions.map {
+            MissionTimelineItem(
+                id: "decision-\($0.id.string)", date: $0.updatedAt,
+                title: $0.question,
+                detail: "Decisão · \($0.state.rawValue)",
+                symbol: "questionmark.bubble")
+        }
+        items += canvasMissionDeliveries.map {
+            MissionTimelineItem(
+                id: "delivery-\($0.id.string)", date: $0.atualizadaEm,
+                title: $0.resumo,
+                detail: "Entrega · \($0.estado.rawValue)",
+                symbol: "shippingbox")
+        }
+        return items.sorted { lhs, rhs in
+            lhs.date == rhs.date ? lhs.id < rhs.id : lhs.date > rhs.date
         }
     }
 
@@ -1692,6 +1949,47 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Centraliza a visão Atenção nos agentes que realmente exigem uma ação.
+    /// O modo pode ter dezenas de nós fora da câmera atual; contar esses nós
+    /// sem reposicionar a câmera fazia a UI mostrar o alerta, mas não o cartão.
+    func focusAttention() {
+        let attentionNodes = nodes.values.filter {
+            nodeIsVisibleOnActiveFloor($0.id) && matchesCanvasViewMode($0)
+        }
+
+        guard !attentionNodes.isEmpty else {
+            if let approval = pendingApprovals.first {
+                focus(sessionID: approval.sessionID)
+            }
+            return
+        }
+        guard canvasSize.width > 0, canvasSize.height > 0 else { return }
+
+        let bounds = attentionNodes.reduce(CGRect.null) { result, node in
+            result.union(CGRect(
+                x: node.posicao.x,
+                y: node.posicao.y,
+                width: node.tamanho.w,
+                height: node.tamanho.h))
+        }.insetBy(dx: -120, dy: -120)
+        guard bounds.width > 0, bounds.height > 0 else { return }
+
+        let availableWidth = max(1, Double(canvasSize.width) - 80)
+        let availableHeight = max(1, Double(canvasSize.height) - 80)
+        var next = viewport
+        next.zoom = min(
+            Viewport.zoomRange.upperBound,
+            max(
+                Viewport.zoomRange.lowerBound,
+                min(availableWidth / bounds.width, availableHeight / bounds.height)
+            )
+        )
+        next.x = bounds.midX - Double(canvasSize.width) / (2 * next.zoom)
+        next.y = bounds.midY - Double(canvasSize.height) / (2 * next.zoom)
+        selection = nil
+        setViewport(next)
+    }
+
     // MARK: - Desenho (§15.2)
 
     /// Traço termina no DesenhoNode sob o primeiro ponto; sem nó ali, cria uma
@@ -1902,6 +2200,36 @@ final class AppStore: ObservableObject {
     // MARK: - Eventos do engine
 
     private func handle(event: EventMessage) {
+        // Operações remotas de documento podem chegar em rajadas (drag remoto,
+        // replay ou sync). Coalescer o ciclo de UI evita uma invalidação por
+        // evento; a ordem do Engine continua preservada dentro do batch.
+        if event.knownTopic == .documentOp {
+            pendingCanvasEvents.append(event)
+            scheduleCanvasEventFlush()
+            return
+        }
+        handleImmediately(event: event)
+    }
+
+    private func scheduleCanvasEventFlush() {
+        guard canvasEventFlushTask == nil else { return }
+        canvasEventFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard !Task.isCancelled else { return }
+            self?.flushCanvasEvents()
+        }
+    }
+
+    private func flushCanvasEvents() {
+        canvasEventFlushTask = nil
+        let events = pendingCanvasEvents
+        pendingCanvasEvents.removeAll(keepingCapacity: true)
+        for event in events {
+            handleImmediately(event: event)
+        }
+    }
+
+    private func handleImmediately(event: EventMessage) {
         guard let topic = event.knownTopic else { return }
         switch topic {
         case .sessionOutput:
@@ -1974,6 +2302,14 @@ final class AppStore: ObservableObject {
         case .noteAppended:
             guard let payload = try? event.decodeParams(NoteAppendedTopicPayload.self) else { return }
             notaControllers[payload.nodeID]?.reloadFromDisk()
+        case .missionChanged, .workstreamChanged:
+            applyRemoteMissionEvent(event)
+        case .decisionChanged:
+            // A decisão pode ser compartilhada sem carregar payload privado
+            // para todos os clientes; a leitura canônica atualiza a fila Agora.
+            Task { await refreshDecisions() }
+        case .roomLayoutChanged:
+            applyRemoteSemanticLayoutEvent(event)
         case .routineFired:
             guard let payload = try? event.decodeParams(RoutineFiredTopicPayload.self) else { return }
             if let routine = routines.first(where: { $0.id == payload.routineID }), routine.notificar {
@@ -2046,8 +2382,10 @@ final class AppStore: ObservableObject {
                 if pendingOpIDs.remove(docOp.opID) != nil { return }
                 apply(docOp.payload)
             }
-        case .memberJoined, .memberLeft, .memberUpdated, .roomUpdated:
+        case .memberJoined, .memberLeft, .memberUpdated:
             break
+        case .roomUpdated:
+            Task { await refreshMissions() }
         case .presenceChanged:
             break
         case .eventAck, .eventReject, .grantIssued, .grantRevoked,

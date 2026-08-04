@@ -47,11 +47,362 @@ private struct RemotePresenceLayer: View {
     }
 }
 
+/// Contexto semântico da visão de Missão. O agregado e o layout vêm da Sala
+/// quando há colaboração ativa; fora dela, a posição local serve de fallback.
+private struct MissionCanvasOverlay: View {
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "flag.checkered")
+                    .foregroundStyle(SwiftUI.Color.accentColor)
+                Text("Contexto da missão")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button {
+                    Task { await store.refreshMissions() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help("Atualizar missões e frentes")
+            }
+
+            if store.missions.isEmpty {
+                Text("Nenhuma missão na sala deste workspace.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Crie uma sala e uma missão no painel Salas para começar o planejamento.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else if let mission = store.canvasMission {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(mission.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                    Spacer()
+                    Text(mission.state.rawValue.replacingOccurrences(of: "_", with: " "))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                if let context = mission.context, !context.isEmpty {
+                    Text(context)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Text("Pronto: \(mission.definitionOfDone)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                if !store.canvasWorkstreams.isEmpty {
+                    Divider()
+                    Text("Frentes")
+                        .font(.caption2.weight(.semibold))
+                    ForEach(store.canvasWorkstreams, id: \.id) { front in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(frontColor(front.state))
+                                .frame(width: 6, height: 6)
+                            Text(front.title)
+                                .font(.caption2)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text(front.state.rawValue.replacingOccurrences(of: "_", with: " "))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                if !store.canvasMissionDecisions.isEmpty || !store.canvasMissionDeliveries.isEmpty {
+                    Divider()
+                    HStack {
+                        Text("Linha do tempo")
+                            .font(.caption2.weight(.semibold))
+                        Spacer()
+                        if !store.canvasMissionDecisions.isEmpty {
+                            Label("\(store.canvasMissionDecisions.count)", systemImage: "questionmark.bubble")
+                                .font(.caption2)
+                        }
+                        if !store.canvasMissionDeliveries.isEmpty {
+                            Label("\(store.canvasMissionDeliveries.count)", systemImage: "shippingbox")
+                                .font(.caption2)
+                        }
+                    }
+                    ForEach(Array(store.canvasMissionTimeline.prefix(5))) { item in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: item.symbol)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 14)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(item.title)
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                                Text(item.detail)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+                HStack {
+                    Button("Todas") { store.canvasFiltroMissao = nil }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    Spacer()
+                    Text("Nós atribuídos às frentes ficam em foco")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            } else {
+                Text("Selecione uma missão para filtrar os nós atribuídos às frentes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(store.missions, id: \.id) { mission in
+                    Button {
+                        store.canvasFiltroMissao = mission.id
+                    } label: {
+                        HStack(spacing: 7) {
+                            Circle()
+                                .fill(missionColor(mission.state))
+                                .frame(width: 7, height: 7)
+                            Text(mission.title)
+                                .font(.caption)
+                                .lineLimit(1)
+                            Spacer()
+                            Text(mission.state.rawValue.replacingOccurrences(of: "_", with: " "))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 330, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.quaternary, lineWidth: 1))
+        .shadow(color: .black.opacity(0.12), radius: 14, y: 5)
+        .padding(14)
+    }
+
+    private func missionColor(_ state: MissionState) -> SwiftUI.Color {
+        switch state {
+        case .active: return .green
+        case .blocked: return .orange
+        case .inReview: return .blue
+        case .completed: return .mint
+        case .archived: return .gray
+        case .draft: return .secondary
+        }
+    }
+
+    private func frontColor(_ state: WorkstreamState) -> SwiftUI.Color {
+        switch state {
+        case .active: return .green
+        case .blocked: return .orange
+        case .waitingForReview: return .blue
+        case .completed: return .mint
+        case .canceled: return .gray
+        case .notStarted: return .secondary
+        }
+    }
+}
+
+private struct MissionSemanticLayer: View {
+    @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var hubConnection: HubConnection
+    @EnvironmentObject private var presenceStore: CollaborationPresenceStore
+    @State private var layoutObserverID: UUID?
+    @State private var loadedRoomID: ULID?
+
+    private var visibleMissions: [Mission] {
+        if let selected = store.canvasFiltroMissao {
+            return store.missions.filter { $0.id == selected }
+        }
+        return store.missions
+    }
+
+    var body: some View {
+        ForEach(Array(visibleMissions.enumerated()), id: \.element.id) { index, mission in
+            let position = store.semanticObjectPosition(mission.id, index: index)
+            MissionFrameCard(mission: mission, fronts: store.workstreams.filter { $0.missionID == mission.id })
+                .frame(width: 390)
+                .scaleEffect(store.viewport.zoom, anchor: .topLeading)
+                .offset(
+                    x: (position.x - store.viewport.x) * store.viewport.zoom,
+                    y: (position.y - store.viewport.y) * store.viewport.zoom)
+                .gesture(dragGesture(for: mission.id, initial: position))
+                .zIndex(0.05)
+        }
+        .allowsHitTesting(true)
+        .onAppear {
+            registerLayoutObserver()
+            Task { await loadRemoteLayoutIfNeeded() }
+        }
+        .onChange(of: presenceStore.activeRoomID) { _, _ in
+            loadedRoomID = nil
+            Task { await loadRemoteLayoutIfNeeded() }
+        }
+        .onChange(of: hubConnection.status) { _, status in
+            if case .conectado = status {
+                loadedRoomID = nil
+                Task { await loadRemoteLayoutIfNeeded() }
+            }
+        }
+        .onDisappear {
+            if let layoutObserverID {
+                hubConnection.removeEventObserver(layoutObserverID)
+            }
+            layoutObserverID = nil
+        }
+    }
+
+    private func dragGesture(for id: ULID, initial: Ponto) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(CanvasSpace.nome))
+            .onChanged { value in
+                let zoom = max(store.viewport.zoom, 0.01)
+                store.moveSemanticObject(
+                    id,
+                    to: Ponto(
+                        x: initial.x + value.translation.width / zoom,
+                        y: initial.y + value.translation.height / zoom))
+            }
+            .onEnded { _ in
+                if let final = store.semanticObjectPositions[id] {
+                    store.moveSemanticObject(id, to: final, persist: true)
+                    persistRemotePosition(id, final)
+                }
+            }
+    }
+
+    private func registerLayoutObserver() {
+        guard layoutObserverID == nil else { return }
+        layoutObserverID = hubConnection.addEventObserver { [store, presenceStore] event in
+            guard event.knownTopic == .roomLayoutChanged,
+                  let payload = try? event.decodeParams(RoomLayoutChangedTopicPayload.self),
+                  payload.roomID == presenceStore.activeRoomID else { return }
+            store.applyRemoteSemanticLayoutEvent(event)
+        }
+    }
+
+    private func loadRemoteLayoutIfNeeded() async {
+        guard let roomID = presenceStore.activeRoomID,
+              hubConnection.isConnected,
+              loadedRoomID != roomID else { return }
+        do {
+            let result: RoomLayoutResult = try await hubConnection.call(
+                .roomLayoutGet,
+                params: RoomLayoutGetParams(roomID: roomID),
+                expecting: RoomLayoutResult.self)
+            guard presenceStore.activeRoomID == roomID else { return }
+            store.replaceSemanticObjectPositions(result.positions)
+            loadedRoomID = roomID
+        } catch {
+            // O layout local continua válido se a Sala ainda não estiver pronta.
+        }
+    }
+
+    private func persistRemotePosition(_ id: ULID, _ position: Ponto) {
+        guard let roomID = presenceStore.activeRoomID else { return }
+        Task {
+            _ = try? await hubConnection.call(
+                .roomLayoutUpdate,
+                params: RoomLayoutUpdateParams(roomID: roomID, objectID: id, position: position))
+        }
+    }
+}
+
+private struct MissionFrameCard: View {
+    let mission: Mission
+    let fronts: [Workstream]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "flag.checkered")
+                    .foregroundStyle(stateColor)
+                Text(mission.title)
+                    .font(.headline)
+                    .lineLimit(2)
+                Spacer()
+                Text(mission.state.rawValue.replacingOccurrences(of: "_", with: " "))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(stateColor)
+            }
+            if let context = mission.context, !context.isEmpty {
+                Text(context)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Text("Pronto: \(mission.definitionOfDone)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            if !fronts.isEmpty {
+                Divider()
+                ForEach(fronts, id: \.id) { front in
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(frontColor(front.state))
+                            .frame(width: 7, height: 7)
+                        Text(front.title)
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer()
+                        Text(front.state.rawValue.replacingOccurrences(of: "_", with: " "))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            } else {
+                Text("Adicione uma Frente para ativar esta missão.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(stateColor.opacity(0.65), lineWidth: 1.5))
+        .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+    }
+
+    private var stateColor: SwiftUI.Color {
+        switch mission.state {
+        case .active: return .green
+        case .blocked: return .orange
+        case .inReview: return .blue
+        case .completed: return .mint
+        case .archived: return .gray
+        case .draft: return .secondary
+        }
+    }
+
+    private func frontColor(_ state: WorkstreamState) -> SwiftUI.Color {
+        switch state {
+        case .active: return .green
+        case .blocked: return .orange
+        case .waitingForReview: return .blue
+        case .completed: return .mint
+        case .canceled: return .gray
+        case .notStarted: return .secondary
+        }
+    }
+}
+
 struct CanvasView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var presenceStore: CollaborationPresenceStore
 
     @State private var panStart: Viewport?
+    @State private var canvasInteracting = false
     @State private var keyMonitor: Any?
 
     var body: some View {
@@ -62,7 +413,7 @@ struct CanvasView: View {
                 // Metal fica estritamente atrás da interação SwiftUI. A grade por
                 // cima conserva a orientação espacial mesmo quando o efeito de
                 // vidro está animado.
-                CanvasMetalBackdrop(viewport: store.viewport)
+                CanvasMetalBackdrop(viewport: store.viewport, isInteracting: canvasInteracting)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                 GridBackground(viewport: store.viewport)
@@ -73,7 +424,11 @@ struct CanvasView: View {
                         store.connectionSelection = nil
                         store.returnFocusToCanvas()
                     }
-                ConnectionsLayer()
+                if store.canvasViewMode == .missao {
+                    MissionCanvasOverlay()
+                    MissionSemanticLayer()
+                }
+                ConnectionsLayer(isInteracting: canvasInteracting)
                 nodeLayer
                 if store.canvasViewMode == .atencao {
                     attentionOverlay
@@ -93,7 +448,12 @@ struct CanvasView: View {
             // funcionam SOBRE webview e terminal — NSEvent monitors por janela
             // (CanvasNavigation.swift). O pinch SwiftUI foi substituído por lá
             // (ancorado no cursor; o gesto antigo nem dispararia, consumido).
-            .background(CanvasEventBridge(store: store) { screenPoint in
+            .background(CanvasEventBridge(
+                store: store,
+                onInteractionChanged: { active in
+                    canvasInteracting = active
+                }
+            ) { screenPoint in
                 let world = CanvasMath.telaParaMundo(screenPoint, viewport: store.viewport)
                 presenceStore.updateLocal(
                     cursor: world, viewport: store.viewport,
@@ -114,6 +474,13 @@ struct CanvasView: View {
             .onChange(of: store.viewport) { _, viewport in
                 presenceStore.updateContext(viewport: viewport, selectedNodeID: store.selection, immediate: false)
             }
+            .onChange(of: store.canvasViewMode) { _, mode in
+                if mode == .atencao {
+                    // A visão Atenção é uma visão operacional, não apenas um
+                    // filtro: ao entrar nela, leva os cartões para a câmera.
+                    store.focusAttention()
+                }
+            }
             }
         }
     }
@@ -132,6 +499,26 @@ struct CanvasView: View {
                 .tint(store.canvasViewMode == mode ? .accentColor : .secondary)
             }
             Spacer()
+            if store.canvasViewMode == .missao && !store.missions.isEmpty {
+                Menu {
+                    Button("Todas as missões") { store.canvasFiltroMissao = nil }
+                    Divider()
+                    ForEach(store.missions, id: \.id) { mission in
+                        Button {
+                            store.canvasFiltroMissao = mission.id
+                        } label: {
+                            Label(mission.title, systemImage: mission.id == store.canvasFiltroMissao ? "checkmark" : "flag")
+                        }
+                    }
+                } label: {
+                    Label(
+                        store.canvasMission?.title ?? "Selecionar missão",
+                        systemImage: "flag.checkered")
+                        .font(.caption)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
             if store.canvasFiltroMissao != nil {
                 Button("Limpar filtro de missão") {
                     store.canvasFiltroMissao = nil
@@ -155,17 +542,31 @@ struct CanvasView: View {
 
     private var nodeLayer: some View {
         let zoom = store.viewport.zoom
-        let visible = visibleWorldRect.insetBy(dx: -80, dy: -80)
+        let margin = CanvasPerformancePolicy.preloadMargin(zoom: zoom)
+        let visible = visibleWorldRect.insetBy(dx: -margin, dy: -margin)
         let ordered = store.nodes.values
             .filter { store.nodeIsVisibleOnActiveFloor($0.id) }
             .filter { store.matchesCanvasViewMode($0) }
+            .filter { store.matchesSelectedMission($0) }
+            .filter {
+                visible.intersects(CGRect(
+                    x: $0.posicao.x,
+                    y: $0.posicao.y,
+                    width: $0.tamanho.w,
+                    height: $0.tamanho.h
+                ))
+            }
             .sorted { ($0.z, $0.id.string) < ($1.z, $1.id.string) }
         return ForEach(ordered, id: \.id) { node in
             let worldFrame = CGRect(x: node.posicao.x, y: node.posicao.y, width: node.tamanho.w, height: node.tamanho.h)
             NodeContainerView(
                 node: node,
                 zoom: zoom,
-                conteudoVisivel: visible.intersects(worldFrame)
+                conteudoVisivel: visible.intersects(worldFrame),
+                isInteracting: canvasInteracting,
+                onInteractionChanged: { active in
+                    canvasInteracting = active
+                }
             )
             .frame(width: node.tamanho.w, height: node.tamanho.h)
             .scaleEffect(zoom, anchor: .topLeading)
@@ -221,13 +622,17 @@ struct CanvasView: View {
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
+                canvasInteracting = true
                 if panStart == nil { panStart = store.viewport }
                 guard var v = panStart else { return }
                 v.x -= Double(value.translation.width) / v.zoom
                 v.y -= Double(value.translation.height) / v.zoom
                 store.setViewport(v)
             }
-            .onEnded { _ in panStart = nil }
+            .onEnded { _ in
+                panStart = nil
+                canvasInteracting = false
+            }
     }
 
     /// Esc duplo com um terminal focado devolve o foco ao canvas (Apêndice B).
@@ -321,6 +726,8 @@ struct NodeContainerView: View {
     let node: Node
     let zoom: Double
     let conteudoVisivel: Bool
+    let isInteracting: Bool
+    let onInteractionChanged: (Bool) -> Void
 
     @EnvironmentObject private var store: AppStore
     @State private var dragBase: Ponto?
@@ -357,6 +764,7 @@ struct NodeContainerView: View {
                 controller: store.terminalController(for: terminal.id),
                 zoom: zoom,
                 conteudoVisivel: conteudoVisivel,
+                isInteracting: isInteracting,
                 dragGesture: moveGesture
             )
         case .nota(let nota):
@@ -372,6 +780,7 @@ struct NodeContainerView: View {
         DragGesture(minimumDistance: 2, coordinateSpace: .named(CanvasSpace.nome))
             .onChanged { value in
                 if dragBase == nil {
+                    onInteractionChanged(true)
                     store.beginNodeDrag(node.id)
                     dragBase = store.nodeDragBase
                 }
@@ -393,9 +802,11 @@ struct NodeContainerView: View {
                     zoom: zoom
                 ) else {
                     store.cancelNodeDrag()
+                    onInteractionChanged(false)
                     return
                 }
                 store.endNodeDrag(node.id, at: destino)
+                onInteractionChanged(false)
             }
     }
 
@@ -414,6 +825,7 @@ struct NodeContainerView: View {
                     .gesture(
                         DragGesture(minimumDistance: 1, coordinateSpace: .named(CanvasSpace.nome))
                             .onChanged { _ in
+                                onInteractionChanged(true)
                                 redimensionando = true
                                 if resizeBase == nil { resizeBase = node.tamanho }
                             }
@@ -427,6 +839,7 @@ struct NodeContainerView: View {
                                     h: max(minimo.h, base.h + Double(value.translation.height) / zoom)
                                 )
                                 store.resizeNode(node.id, to: tamanho)
+                                onInteractionChanged(false)
                             }
                     )
             }

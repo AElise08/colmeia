@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -35,6 +38,11 @@ public final class SocketClient: @unchecked Sendable {
     private let writeLock = NSLock()
     private var fd: Int32 = -1
     private var closed = false
+    /// Transporte WebSocket usado por URLs `ws://`/`wss://`. O transporte
+    /// Unix/TCP continua sendo o caminho local e permanece sem dependência de
+    /// Foundation networking.
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var webSocketSession: URLSession?
     private var pending: [String: CheckedContinuation<ResponseMessage, Error>] = [:]
     private var requestCounter: UInt64 = 0
     private let readQueue = DispatchQueue(label: "colmeia.socket-client.read")
@@ -61,6 +69,19 @@ public final class SocketClient: @unchecked Sendable {
         stateLock.lock()
         defer { stateLock.unlock() }
         guard fd < 0, !closed else { throw SocketClientError.alreadyConnected }
+
+        if socketPath.hasPrefix("ws://") || socketPath.hasPrefix("wss://") {
+            guard let url = URL(string: socketPath), url.host != nil else {
+                throw SocketClientError.syscallFailed("URL WebSocket inválida", errno: EINVAL)
+            }
+            let session = URLSession(configuration: .default)
+            let task = session.webSocketTask(with: url)
+            webSocketSession = session
+            webSocketTask = task
+            task.resume()
+            startWebSocketReadLoop(task)
+            return
+        }
 
         let cleanPath = socketPath.replacingOccurrences(of: "ws://", with: "").replacingOccurrences(of: "wss://", with: "")
 
@@ -171,18 +192,31 @@ public final class SocketClient: @unchecked Sendable {
     public var isConnected: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return fd >= 0 && !closed
+        return (fd >= 0 || webSocketTask != nil) && !closed
     }
 
     /// `shutdown` acorda o read loop bloqueado; o loop faz a limpeza dos pendentes.
     public func close() {
         stateLock.lock()
         let currentFD = fd
+        let task = webSocketTask
+        webSocketTask = nil
+        webSocketSession = nil
+        let orphans = pending
+        pending.removeAll()
         closed = true
         stateLock.unlock()
+        task?.cancel(with: .goingAway, reason: nil)
         if currentFD >= 0 {
             _ = shutdown(currentFD, Int32(SHUT_RDWR))
         }
+        // `URLSessionWebSocketTask.cancel` notifica o receive loop de forma
+        // assíncrona. Desbloqueamos imediatamente quem aguardava uma resposta;
+        // o callback posterior encontra a fila já vazia e não duplica resume.
+        for (_, continuation) in orphans {
+            continuation.resume(throwing: SocketClientError.connectionClosed)
+        }
+        eventContinuation.finish()
     }
 
     // MARK: - Requests
@@ -225,29 +259,53 @@ public final class SocketClient: @unchecked Sendable {
     }
 
     /// Método como String para extensões fora do inventário §6.4.
-    public func callRaw(method: String, params: JSONValue?) async throws -> JSONValue {
-        let response = try await perform(method: method, params: params)
+    public func callRaw(
+        method: String,
+        params: JSONValue?,
+        requestID: String? = nil
+    ) async throws -> JSONValue {
+        let response = try await perform(method: method, params: params, requestID: requestID)
         if response.ok {
             return response.result ?? .object([:])
         }
         throw response.error ?? ProtocolError(name: .internal_error, message: "response !ok sem error")
     }
 
-    private func perform(method: String, params: JSONValue?) async throws -> ResponseMessage {
-        let requestID = nextRequestID()
+    private func perform(
+        method: String,
+        params: JSONValue?,
+        requestID suppliedRequestID: String? = nil
+    ) async throws -> ResponseMessage {
+        let requestID = suppliedRequestID ?? nextRequestID()
         let request = RequestMessage(id: requestID, method: method, params: params)
         let line = try SocketFraming.encodeLine(Envelope.request(request))
 
         return try await withCheckedThrowingContinuation { continuation in
             stateLock.lock()
-            guard fd >= 0, !closed else {
+            guard (fd >= 0 || webSocketTask != nil), !closed else {
                 stateLock.unlock()
                 continuation.resume(throwing: SocketClientError.notConnected)
                 return
             }
             let currentFD = fd
+            let currentWebSocket = webSocketTask
             pending[requestID] = continuation
             stateLock.unlock()
+
+            if let currentWebSocket {
+                guard let text = String(data: line, encoding: .utf8) else {
+                    stateLock.lock()
+                    let orphan = pending.removeValue(forKey: requestID)
+                    stateLock.unlock()
+                    orphan?.resume(throwing: SocketClientError.connectionClosed)
+                    return
+                }
+                currentWebSocket.send(.string(text)) { [weak self] error in
+                    guard let error else { return }
+                    self?.failPending(requestID: requestID, error: error)
+                }
+                return
+            }
 
             writeLock.lock()
             do {
@@ -290,6 +348,48 @@ public final class SocketClient: @unchecked Sendable {
             }
         }
         handleDisconnect(fd: fd)
+    }
+
+    private func startWebSocketReadLoop(_ task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                switch message {
+                case .string(let text): self.handle(line: Data(text.utf8))
+                case .data(let data): self.handle(line: data)
+                @unknown default: break
+                }
+                self.startWebSocketReadLoop(task)
+            case .failure(let error):
+                self.handleWebSocketDisconnect(task, error: error)
+            }
+        }
+    }
+
+    private func failPending(requestID: String, error: Error) {
+        stateLock.lock()
+        let continuation = pending.removeValue(forKey: requestID)
+        stateLock.unlock()
+        continuation?.resume(throwing: error)
+    }
+
+    private func handleWebSocketDisconnect(_ task: URLSessionWebSocketTask, error: Error) {
+        stateLock.lock()
+        guard webSocketTask === task else {
+            stateLock.unlock()
+            return
+        }
+        webSocketTask = nil
+        webSocketSession = nil
+        let orphans = pending
+        pending.removeAll()
+        closed = true
+        stateLock.unlock()
+        for (_, continuation) in orphans {
+            continuation.resume(throwing: error)
+        }
+        eventContinuation.finish()
     }
 
     /// Linhas ilegíveis/kinds desconhecidos são ignorados (forward compatibility, §0).

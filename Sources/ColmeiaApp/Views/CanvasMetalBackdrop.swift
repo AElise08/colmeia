@@ -7,6 +7,7 @@ import ColmeiaKit
 /// nunca impede alguém de trabalhar no workspace.
 struct CanvasMetalBackdrop: NSViewRepresentable {
     let viewport: Viewport
+    let isInteracting: Bool
 
     func makeCoordinator() -> LiquidGlassRenderer { LiquidGlassRenderer() }
 
@@ -20,11 +21,15 @@ struct CanvasMetalBackdrop: NSViewRepresentable {
         view.clearColor = MTLClearColor(red: 0.075, green: 0.078, blue: 0.085, alpha: 1)
         view.delegate = context.coordinator
         context.coordinator.viewport = viewport
+        view.isPaused = isInteracting
         return view
     }
 
     func updateNSView(_ view: MTKView, context: Context) {
         context.coordinator.viewport = viewport
+        // O fundo é decorativo. Durante pan/zoom ele não pode disputar a main
+        // thread/GPU com a cena interativa; a grade e os nós continuam responsivos.
+        view.isPaused = isInteracting
     }
 }
 

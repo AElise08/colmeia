@@ -24,7 +24,10 @@ public final class HubServer: @unchecked Sendable {
     private let port: UInt16
     private var listenFD: Int32 = -1
     private let acceptQueue = DispatchQueue(label: "colmeia.hub.accept")
-    private let stateQueue = DispatchQueue(label: "colmeia.hub.state")
+    /// Todo estado do Hub (salas, workspaces, clientes e índices) só é tocado
+    /// nesta fila. Clientes possuem filas próprias de leitura/escrita, mas
+    /// nunca devem mutar o estado autoritativo diretamente.
+    let stateQueue = DispatchQueue(label: "colmeia.hub.state")
 
     var roomStores: [ULID: RoomStore] = [:]
     var missionStores: [ULID: MissionStore] = [:]
@@ -32,9 +35,23 @@ public final class HubServer: @unchecked Sendable {
     var sessionToWorkspace: [ULID: ULID] = [:] // sessionID → workspaceID
     var clients: [ObjectIdentifier: HubClient] = [:]
     private var shuttingDown = false
+    private let lifecycleLock = NSLock()
     private var tickTimer: DispatchSourceTimer?
     private let syncRequestLock = NSLock()
     private var pendingSessionStarts: [String: (SyncSessionStartResult) -> Void] = [:]
+    /// Respostas recentes por identidade+request id+fingerprint da operação.
+    /// O cliente offline replaya o mesmo request; se o Hub já aplicou a
+    /// mutação antes da queda, devolvemos a resposta original sem executar a
+    /// operação duas vezes. O fingerprint evita que IDs locais reciclados em
+    /// conexões diferentes confundam operações distintas.
+    private var requestResponseCache: [String: ResponseMessage] = [:]
+    private var requestResponseOrder: [String] = []
+    private let requestResponseCacheLimit = 4096
+    /// Chave da request atualmente em dispatch por conexão. `respond` fica
+    /// deliberadamente simples (há muitos call sites), mas ainda precisa
+    /// associar a resposta ao método/params para não confundir IDs iguais em
+    /// conexões diferentes do mesmo autor.
+    private var requestCacheContext: [ObjectIdentifier: String] = [:]
 
     var engineConn: EngineConnection?
 
@@ -123,14 +140,26 @@ public final class HubServer: @unchecked Sendable {
     }
 
     public func stop() {
-        shuttingDown = true
-        engineConn?.stop()
-        tickTimer?.cancel()
-        if listenFD >= 0 { close(listenFD); listenFD = -1 }
-        stateQueue.sync {
-            for client in clients.values { client.close() }
-            clients.removeAll()
+        lifecycleLock.lock()
+        if shuttingDown {
+            lifecycleLock.unlock()
+            engineConn?.stop()
+            return
         }
+        shuttingDown = true
+        lifecycleLock.unlock()
+        let resources: (Int32, [HubClient]) = stateQueue.sync {
+            tickTimer?.cancel()
+            tickTimer = nil
+            let fd = listenFD
+            listenFD = -1
+            let activeClients = Array(clients.values)
+            clients.removeAll()
+            return (fd, activeClients)
+        }
+        engineConn?.stop()
+        if resources.0 >= 0 { close(resources.0) }
+        resources.1.forEach { $0.close() }
     }
 
     // MARK: - Engine Proxy
@@ -359,7 +388,7 @@ public final class HubServer: @unchecked Sendable {
     }
 
     private func tick() {
-        guard !shuttingDown else { return }
+        guard !isShuttingDown else { return }
         let now = Date()
         for store in roomStores.values {
             let expired = store.expireLeases(now: now)
@@ -377,7 +406,7 @@ public final class HubServer: @unchecked Sendable {
     // MARK: - IO
 
     private func acceptLoop() {
-        while !shuttingDown {
+        while !isShuttingDown {
             let fd = accept(listenFD, nil, nil)
             if fd < 0 {
                 if errno == EINTR { continue }
@@ -391,14 +420,25 @@ public final class HubServer: @unchecked Sendable {
         }
     }
 
+    private var isShuttingDown: Bool {
+        lifecycleLock.lock(); defer { lifecycleLock.unlock() }
+        return shuttingDown
+    }
+
     private func addClient(fd: Int32) {
-        guard !shuttingDown else { close(fd); return }
+        guard !isShuttingDown else { close(fd); return }
         let client = HubClient(fd: fd, hub: self)
         clients[ObjectIdentifier(client)] = client
         client.startReading()
     }
 
     public func dropClient(_ client: HubClient, motivo: String) {
+        stateQueue.async { [weak self, client] in
+            self?.dropClientOnStateQueue(client, motivo: motivo)
+        }
+    }
+
+    private func dropClientOnStateQueue(_ client: HubClient, motivo: String) {
         guard clients.removeValue(forKey: ObjectIdentifier(client)) != nil else { return }
         for roomID in client.joinedRoomIDs {
             let authorStillConnected = clients.values.contains {
@@ -420,6 +460,23 @@ public final class HubServer: @unchecked Sendable {
     // MARK: - Dispatch
 
     public func receive(line: Data, from client: HubClient) {
+        // O ACK do relay de `session.start` acorda uma chamada que pode estar
+        // aguardando na stateQueue. Ele só toca no mapa protegido por lock e
+        // precisa ser tratado fora da fila para não formar deadlock.
+        if let envelope = try? SocketFraming.decodeLine(Envelope.self, from: line),
+           case .event(let event) = envelope,
+           event.topic == "sync.session.start.result" {
+            handleSyncSessionStartResult(event)
+            return
+        }
+        // O read loop de cada cliente é independente. Enfileirar a linha
+        // inteira evita corridas em `clients`, RoomStore e WorkspaceStore.
+        stateQueue.async { [weak self, client] in
+            self?.receiveOnStateQueue(line: line, from: client)
+        }
+    }
+
+    private func receiveOnStateQueue(line: Data, from client: HubClient) {
         guard client.rateLimiter.allow(bytes: line.count) else {
             log.warn("rate_limited", "cliente (client.clientName) excedeu o limite do Hub")
             if let envelope = try? SocketFraming.decodeLine(Envelope.self, from: line),
@@ -437,90 +494,114 @@ public final class HubServer: @unchecked Sendable {
         switch envelope {
         case .request(let request):
             if !client.helloDone, request.knownMethod != .hello {
-                client.respond(id: request.id, error: ProtocolError(
+                sendError(client, id: request.id, error: ProtocolError(
                     name: .invalid_params,
-                    message: "handshake `hello` obrigatório antes de \(request.method)"))
+                    message: "handshake `hello` obrigatório antes de \(request.method)"), cache: false)
                 return
             }
+            if request.knownMethod != .hello,
+               let cached = cachedResponse(for: client, request: request) {
+                client.send(.response(cached))
+                return
+            }
+            requestCacheContext[ObjectIdentifier(client)] = requestCacheKey(
+                for: client, request: request)
+            defer { requestCacheContext.removeValue(forKey: ObjectIdentifier(client)) }
             do {
                 try dispatch(request, from: client)
             } catch let error as ProtocolError {
-                client.respond(id: request.id, error: error)
+                sendError(client, id: request.id, error: error)
             } catch {
-                client.respond(id: request.id, error: ProtocolError(name: .internal_error, message: "\(error)"))
+                sendError(client, id: request.id,
+                    error: ProtocolError(name: .internal_error, message: "\(error)"))
             }
         case .event(let event):
-            if event.topic == "sync.session.start.result",
-               let result = try? event.decodeParams(SyncSessionStartResult.self) {
-                syncRequestLock.lock()
-                let callback = pendingSessionStarts.removeValue(forKey: result.requestID)
-                syncRequestLock.unlock()
-                callback?(result)
-                return
-            }
-            if let topic = event.knownTopic {
-                if case .object(let dict) = event.params {
-                    if topic == .noteAppended {
-                        if case .string(let nodeIDStr) = dict["node_id"],
-                           let nodeID = ULID(nodeIDStr),
-                           case .string(let conteudo) = dict["conteudo"] {
-                            if let store = storeForNode(nodeID: nodeID) {
-                                store.setNoteContent(nodeID: nodeID, content: conteudo)
-                                store.save()
-                            }
-                        }
-                    } else if topic == .sessionState {
-                        if case .string(let sidStr) = dict["session_id"],
-                           let sessionID = ULID(sidStr),
-                           case .string(let estado) = dict["estado"] {
-                            let wsID: ULID?
-                            if case .string(let wsidStr) = dict["workspace_id"] { wsID = ULID(wsidStr)
-                            } else if case .string(let nidStr) = dict["node_id"] ?? dict["no_id"],
-                                      let nid = ULID(nidStr) { wsID = storeForNode(nodeID: nid)?.workspace.id
-                            } else { wsID = sessionToWorkspace[sessionID] }
-                            if let wsID, let store = workspaceStores[wsID] {
-                                store.setSessionState(sessionID: sessionID, estado: estado, nodeID: nidFromDict(dict))
-                                store.save()
-                                sessionToWorkspace[sessionID] = wsID
-                            }
-                        }
-                    } else if topic == .sessionOutput {
-                        if case .string(let sidStr) = dict["session_id"],
-                           let sessionID = ULID(sidStr),
-                           case .string(let dataB64) = dict["data_b64"],
-                           let data = Data(base64Encoded: dataB64) {
-                            let text = String(decoding: data, as: UTF8.self)
-                            let eventSeq: UInt64
-                            if case .number(let rawSeq) = dict["seq"] { eventSeq = UInt64(rawSeq) }
-                            else { eventSeq = 0 }
-                            let wsID: ULID?
-                            if case .string(let wsidStr) = dict["workspace_id"] { wsID = ULID(wsidStr)
-                            } else { wsID = sessionToWorkspace[sessionID] }
-                            if let wsID, let store = workspaceStores[wsID] {
-                                store.appendSessionOutput(sessionID: sessionID, text: text, seq: eventSeq, dataB64: dataB64)
-                                store.save()
-                            }
-                        }
-                    } else if topic == .documentOp {
-                        if case .string(let wsidStr) = dict["workspace_id"],
-                           let wsid = ULID(wsidStr),
-                           let store = workspaceStores[wsid],
-                           let opValue = dict["op"] {
-                            do {
-                                let op = try opValue.decode(as: DocOp.self)
-                                store.applyDocOp(op)
-                                store.save()
-                            } catch {
-                                print("[Hub] document.op decode error: \(error)")
-                            }
-                        }
-                    }
-                }
-                broadcast(topic, ws: nil, event.params)
-            }
+            handleEventOnStateQueue(event)
         case .response:
             break
         }
+    }
+
+    /// Entrada única para eventos originados pelo EngineConnection.
+    /// Chamadores externos devem usar este método para preservar a
+    /// confinamento do estado autoritativo.
+    func enqueueEngineEvent(_ event: EventMessage) {
+        stateQueue.async { [weak self] in
+            self?.handleEventOnStateQueue(event)
+        }
+    }
+
+    private func handleEventOnStateQueue(_ event: EventMessage) {
+        if event.topic == "sync.session.start.result" {
+            handleSyncSessionStartResult(event)
+            return
+        }
+        guard let topic = event.knownTopic else { return }
+        if case .object(let dict) = event.params {
+            if topic == .noteAppended {
+                if case .string(let nodeIDStr) = dict["node_id"],
+                   let nodeID = ULID(nodeIDStr),
+                   case .string(let conteudo) = dict["conteudo"],
+                   let store = storeForNode(nodeID: nodeID) {
+                    store.setNoteContent(nodeID: nodeID, content: conteudo)
+                    store.save()
+                }
+            } else if topic == .sessionState {
+                if case .string(let sidStr) = dict["session_id"],
+                   let sessionID = ULID(sidStr),
+                   case .string(let estado) = dict["estado"] {
+                    let wsID: ULID?
+                    if case .string(let wsidStr) = dict["workspace_id"] { wsID = ULID(wsidStr)
+                    } else if case .string(let nidStr) = dict["node_id"] ?? dict["no_id"],
+                              let nid = ULID(nidStr) { wsID = storeForNode(nodeID: nid)?.workspace.id
+                    } else { wsID = sessionToWorkspace[sessionID] }
+                    if let wsID, let store = workspaceStores[wsID] {
+                        store.setSessionState(sessionID: sessionID, estado: estado, nodeID: nidFromDict(dict))
+                        store.save()
+                        sessionToWorkspace[sessionID] = wsID
+                    }
+                }
+            } else if topic == .sessionOutput {
+                if case .string(let sidStr) = dict["session_id"],
+                   let sessionID = ULID(sidStr),
+                   case .string(let dataB64) = dict["data_b64"],
+                   let data = Data(base64Encoded: dataB64) {
+                    let text = String(decoding: data, as: UTF8.self)
+                    let eventSeq: UInt64
+                    if case .number(let rawSeq) = dict["seq"] { eventSeq = UInt64(rawSeq) }
+                    else { eventSeq = 0 }
+                    let wsID: ULID?
+                    if case .string(let wsidStr) = dict["workspace_id"] { wsID = ULID(wsidStr)
+                    } else { wsID = sessionToWorkspace[sessionID] }
+                    if let wsID, let store = workspaceStores[wsID] {
+                        store.appendSessionOutput(sessionID: sessionID, text: text, seq: eventSeq, dataB64: dataB64)
+                        store.save()
+                    }
+                }
+            } else if topic == .documentOp {
+                if case .string(let wsidStr) = dict["workspace_id"],
+                   let wsid = ULID(wsidStr),
+                   let store = workspaceStores[wsid],
+                   let opValue = dict["op"] {
+                    do {
+                        let op = try opValue.decode(as: DocOp.self)
+                        store.applyDocOp(op)
+                        store.save()
+                    } catch {
+                        print("[Hub] document.op decode error: \(error)")
+                    }
+                }
+            }
+        }
+        broadcast(topic, ws: nil, event.params)
+    }
+
+    private func handleSyncSessionStartResult(_ event: EventMessage) {
+        guard let result = try? event.decodeParams(SyncSessionStartResult.self) else { return }
+        syncRequestLock.lock()
+        let callback = pendingSessionStarts.removeValue(forKey: result.requestID)
+        syncRequestLock.unlock()
+        callback?(result)
     }
 
     private func dispatch(_ request: RequestMessage, from client: HubClient) throws {
@@ -643,6 +724,34 @@ public final class HubServer: @unchecked Sendable {
             let params = try request.decodeParams(RoomDeltaParams.self)
             let store = try requireRoom(params.roomID)
             respond(client, id: request.id, store.buildDelta(sinceRoomSeq: params.sinceRoomSeq))
+        case .roomLayoutGet:
+            let params = try request.decodeParams(RoomLayoutGetParams.self)
+            let store = try requireRoomMember(client, roomID: params.roomID)
+            respond(client, id: request.id,
+                RoomLayoutResult(roomID: params.roomID, positions: store.getSemanticLayout()))
+        case .roomLayoutUpdate:
+            let params = try request.decodeParams(RoomLayoutUpdateParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions,
+                    message: "somente owner/editor pode alterar o layout semântico")
+            }
+            guard params.position.x.isFinite, params.position.y.isFinite,
+                  abs(params.position.x) <= 1_000_000,
+                  abs(params.position.y) <= 1_000_000 else {
+                throw ProtocolError(name: .invalid_params, message: "posição do layout fora dos limites")
+            }
+            let store = try requireRoom(params.roomID)
+            let positions = store.updateSemanticLayout(
+                objectID: params.objectID, position: params.position)
+            try persist(store)
+            broadcastToRoom(.roomLayoutChanged, roomID: params.roomID,
+                RoomLayoutChangedTopicPayload(
+                    roomID: params.roomID,
+                    objectID: params.objectID,
+                    position: params.position,
+                    positions: positions))
+            respond(client, id: request.id,
+                RoomLayoutResult(roomID: params.roomID, positions: positions))
         case .roomList:
             let rooms = roomStores.values.map { $0.getRoom() }
                 .sorted { $0.updatedAt > $1.updatedAt }
@@ -875,7 +984,13 @@ public final class HubServer: @unchecked Sendable {
                 message: "sessão de agente \(params.agentSessionID) não encontrada")
         case .grantIssue:
             let params = try request.decodeParams(GrantIssueParams.self)
-            let store = try requireRoom(params.roomID)
+            let store = try requireRoomMember(client, roomID: params.roomID)
+            guard store.getMembers(status: .active).contains(where: {
+                $0.id == client.author.rawValue && $0.roles.contains(.owner)
+            }) else {
+                throw ProtocolError(name: .insufficient_permissions,
+                    message: "somente owner pode emitir capability grant")
+            }
             let grant = store.issueGrant(
                 subjectID: params.subjectID, resource: params.resource,
                 actions: params.actions, issuedBy: client.author,
@@ -884,20 +999,88 @@ public final class HubServer: @unchecked Sendable {
             respond(client, id: request.id, GrantResult(grant: grant))
         case .grantRevoke:
             let params = try request.decodeParams(GrantRevokeParams.self)
-            for store in roomStores.values {
-                if let grant = try? store.revokeGrant(id: params.grantID) {
-                    try persist(store)
-                    respond(client, id: request.id, GrantResult(grant: grant))
-                    return
+            for store in roomStores.values where store.getGrants().contains(where: { $0.id == params.grantID }) {
+                _ = try requireRoomMember(client, roomID: store.roomID)
+                guard store.getMembers(status: .active).contains(where: {
+                    $0.id == client.author.rawValue && $0.roles.contains(.owner)
+                }) else {
+                    throw ProtocolError(name: .insufficient_permissions,
+                        message: "somente owner pode revogar capability grant")
                 }
+                let grant = try store.revokeGrant(id: params.grantID)
+                try persist(store)
+                respond(client, id: request.id, GrantResult(grant: grant))
+                return
             }
             throw ProtocolError(name: .grant_not_found,
                 message: "grant \(params.grantID) não encontrado")
         case .grantList:
             let params = try request.decodeParams(GrantListParams.self)
-            let store = try requireRoom(params.roomID)
+            let store = try requireRoomMember(client, roomID: params.roomID)
+            if let subjectID = params.subjectID,
+               subjectID != client.author.rawValue,
+               !canEditRoom(client, roomID: params.roomID) {
+                throw ProtocolError(name: .insufficient_permissions,
+                    message: "viewer só pode consultar grants do próprio subject")
+            }
             respond(client, id: request.id,
                 store.getGrants(subjectID: params.subjectID, activeOnly: params.activeOnly ?? false))
+        case .executionJobCreate:
+            let params = try request.decodeParams(ExecutionJobCreateParams.self)
+            let store = try requireRoomMember(client, roomID: params.roomID)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions,
+                    message: "somente owner/editor pode criar job de execução")
+            }
+            let job = try store.createExecutionJob(
+                sessionID: params.sessionID, subjectID: params.subjectID,
+                command: params.command, expiresAt: params.expiresAt,
+                requestedBy: client.author)
+            try persist(store)
+            respond(client, id: request.id, ExecutionJobResult(job: job))
+        case .executionJobGet:
+            let params = try request.decodeParams(ExecutionJobGetParams.self)
+            let store = try requireRoomMember(client, roomID: params.roomID)
+            guard let job = store.getExecutionJob(id: params.jobID) else {
+                throw ProtocolError(name: .agent_session_not_found,
+                    message: "job de execução \(params.jobID) não encontrado")
+            }
+            guard job.subjectID == client.author.rawValue || canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions,
+                    message: "job só pode ser consultado pelo executor ou editor")
+            }
+            respond(client, id: request.id, ExecutionJobResult(job: job))
+        case .executionJobList:
+            let params = try request.decodeParams(ExecutionJobListParams.self)
+            let store = try requireRoomMember(client, roomID: params.roomID)
+            if let subjectID = params.subjectID,
+               subjectID != client.author.rawValue,
+               !canEditRoom(client, roomID: params.roomID) {
+                throw ProtocolError(name: .insufficient_permissions,
+                    message: "viewer só pode listar jobs do próprio executor")
+            }
+            respond(client, id: request.id,
+                store.getExecutionJobs(subjectID: params.subjectID, state: params.state))
+        case .executionJobTransition:
+            let params = try request.decodeParams(ExecutionJobTransitionParams.self)
+            let store = try requireRoomMember(client, roomID: params.roomID)
+            guard let current = store.getExecutionJob(id: params.jobID) else {
+                throw ProtocolError(name: .agent_session_not_found,
+                    message: "job de execução \(params.jobID) não encontrado")
+            }
+            let isExecutor = current.subjectID == client.author.rawValue
+            guard isExecutor || canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions,
+                    message: "somente executor/editor pode atualizar job")
+            }
+            if isExecutor && params.state == .canceled {
+                throw ProtocolError(name: .insufficient_permissions,
+                    message: "executor não pode cancelar job")
+            }
+            let job = try store.transitionExecutionJob(
+                id: params.jobID, to: params.state, result: params.result)
+            try persist(store)
+            respond(client, id: request.id, ExecutionJobResult(job: job))
         case .leaseAcquire:
             let params = try request.decodeParams(LeaseAcquireParams.self)
             let store = try requireRoom(params.roomID)
@@ -1069,13 +1252,23 @@ public final class HubServer: @unchecked Sendable {
                     throw ProtocolError(name: .internal_error, message: "Engine indisponível para \(request.method)")
                 }
                 var result: JSONValue?
+                let resultLock = NSLock()
                 let semaphore = DispatchSemaphore(value: 0)
                 conn.call(method: request.method, params: request.params) { res in
-                    if case .success(let v) = res { result = v }
+                    if case .success(let v) = res {
+                        resultLock.lock()
+                        result = v
+                        resultLock.unlock()
+                    }
                     semaphore.signal()
                 }
-                semaphore.wait()
-                guard let result else {
+                guard semaphore.wait(timeout: .now() + 12) == .success else {
+                    throw ProtocolError(name: .internal_error, message: "Engine não respondeu a \(request.method)")
+                }
+                resultLock.lock()
+                let resolvedResult = result
+                resultLock.unlock()
+                guard let result = resolvedResult else {
                     throw ProtocolError(name: .internal_error, message: "Engine \(request.method) falhou")
                 }
                 respond(client, id: request.id, result)
@@ -1106,10 +1299,14 @@ public final class HubServer: @unchecked Sendable {
                 ultimaFonte: client.author, floorID: nil, checklist: []))
         case .missionList:
             let params = try request.decodeParams(MissionListParams.self)
+            _ = try requireRoomMember(client, roomID: params.roomID)
             let store = try requireMissionStore(params.roomID)
             respond(client, id: request.id, store.listMissions(state: params.state))
         case .missionCreate:
             let params = try request.decodeParams(MissionCreateParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode criar missão")
+            }
             let store = try requireMissionStore(params.roomID)
             let mission = try store.createMission(
                 title: params.title,
@@ -1118,9 +1315,35 @@ public final class HubServer: @unchecked Sendable {
                 ownerID: params.ownerID ?? client.author.rawValue
             )
             try store.persist(to: paths)
+            broadcastToRoom(.missionChanged, roomID: params.roomID,
+                MissionChangedTopicPayload(roomID: params.roomID, mission: mission, change: "created"))
+            respond(client, id: request.id, MissionResult(mission: mission))
+        case .missionGet:
+            let params = try request.decodeParams(MissionGetParams.self)
+            _ = try requireRoomMember(client, roomID: params.roomID)
+            let store = try requireMissionStore(params.roomID)
+            guard let mission = store.getMission(params.missionID) else {
+                throw ProtocolError(name: .invalid_params, message: "missão \(params.missionID) não encontrada")
+            }
+            respond(client, id: request.id, MissionResult(mission: mission))
+        case .missionUpdate:
+            let params = try request.decodeParams(MissionUpdateParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode alterar missão")
+            }
+            let store = try requireMissionStore(params.roomID)
+            let mission = try store.updateMission(
+                id: params.missionID, title: params.title, context: params.context,
+                definitionOfDone: params.definitionOfDone, ownerID: params.ownerID)
+            try store.persist(to: paths)
+            broadcastToRoom(.missionChanged, roomID: params.roomID,
+                MissionChangedTopicPayload(roomID: params.roomID, mission: mission, change: "updated"))
             respond(client, id: request.id, MissionResult(mission: mission))
         case .missionTransition:
             let params = try request.decodeParams(MissionTransitionParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode alterar missão")
+            }
             if params.state == .archived {
                 let room = try requireRoom(params.roomID)
                 guard room.getMembers(status: .active).contains(where: {
@@ -1136,9 +1359,12 @@ public final class HubServer: @unchecked Sendable {
                 reason: params.reason
             )
             try store.persist(to: paths)
+            broadcastToRoom(.missionChanged, roomID: params.roomID,
+                MissionChangedTopicPayload(roomID: params.roomID, mission: mission, change: "transitioned"))
             respond(client, id: request.id, MissionResult(mission: mission))
         case .workstreamList:
             let params = try request.decodeParams(WorkstreamListParams.self)
+            _ = try requireRoomMember(client, roomID: params.roomID)
             let store = try requireMissionStore(params.roomID)
             respond(client, id: request.id, store.listWorkstreams(
                 missionID: params.missionID,
@@ -1146,6 +1372,9 @@ public final class HubServer: @unchecked Sendable {
             ))
         case .workstreamCreate:
             let params = try request.decodeParams(WorkstreamCreateParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode criar frente")
+            }
             let store = try requireMissionStore(params.roomID)
             let workstream = try store.createWorkstream(
                 missionID: params.missionID,
@@ -1156,7 +1385,140 @@ public final class HubServer: @unchecked Sendable {
                 dependsOn: params.dependsOn ?? []
             )
             try store.persist(to: paths)
+            broadcastToRoom(.workstreamChanged, roomID: params.roomID,
+                WorkstreamChangedTopicPayload(roomID: params.roomID, workstream: workstream, change: "created"))
             respond(client, id: request.id, WorkstreamResult(workstream: workstream))
+        case .workstreamGet:
+            let params = try request.decodeParams(WorkstreamGetParams.self)
+            _ = try requireRoomMember(client, roomID: params.roomID)
+            let store = try requireMissionStore(params.roomID)
+            guard let workstream = store.getWorkstream(params.workstreamID) else {
+                throw ProtocolError(name: .invalid_params, message: "frente \(params.workstreamID) não encontrada")
+            }
+            respond(client, id: request.id, WorkstreamResult(workstream: workstream))
+        case .workstreamUpdate:
+            let params = try request.decodeParams(WorkstreamUpdateParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode alterar frente")
+            }
+            let store = try requireMissionStore(params.roomID)
+            let workstream = try store.updateWorkstream(
+                id: params.workstreamID, title: params.title, objective: params.objective,
+                definitionOfDone: params.definitionOfDone, assignee: params.assignee,
+                clearAssignee: params.clearAssignee ?? false,
+                dependsOn: params.dependsOn, blockedBy: params.blockedBy)
+            try store.persist(to: paths)
+            broadcastToRoom(.workstreamChanged, roomID: params.roomID,
+                WorkstreamChangedTopicPayload(roomID: params.roomID, workstream: workstream, change: "updated"))
+            respond(client, id: request.id, WorkstreamResult(workstream: workstream))
+        case .workstreamTransition:
+            let params = try request.decodeParams(WorkstreamTransitionParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode alterar frente")
+            }
+            let store = try requireMissionStore(params.roomID)
+            let workstream = try store.transitionWorkstream(id: params.workstreamID, to: params.state)
+            try store.persist(to: paths)
+            broadcastToRoom(.workstreamChanged, roomID: params.roomID,
+                WorkstreamChangedTopicPayload(roomID: params.roomID, workstream: workstream, change: "transitioned"))
+            respond(client, id: request.id, WorkstreamResult(workstream: workstream))
+        case .workstreamBriefing:
+            let params = try request.decodeParams(WorkstreamBriefingParams.self)
+            _ = try requireRoomMember(client, roomID: params.roomID)
+            let store = try requireMissionStore(params.roomID)
+            let briefing = try store.buildWorkstreamBriefing(
+                workstreamID: params.workstreamID,
+                agentName: params.agentName,
+                agentRole: params.agentRole,
+                capabilities: params.capabilities ?? [],
+                allowedArtifacts: params.allowedArtifacts ?? [])
+            respond(client, id: request.id, WorkstreamBriefingResult(briefing: briefing))
+        case .decisionCreate:
+            let params = try request.decodeParams(DecisionCreateParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode criar decisão")
+            }
+            let store = try requireMissionStore(params.roomID)
+            let decision = try store.createDecision(
+                missionID: params.missionID, workstreamID: params.workstreamID,
+                question: params.question, options: params.options ?? [],
+                requestedBy: client.author, dueAt: params.dueAt)
+            try store.persist(to: paths)
+            broadcastToRoom(.decisionChanged, roomID: params.roomID,
+                DecisionChangedTopicPayload(roomID: params.roomID, decision: decision, change: "created"))
+            respond(client, id: request.id, DecisionResult(decision: decision))
+        case .decisionGet:
+            let params = try request.decodeParams(DecisionGetParams.self)
+            _ = try requireRoomMember(client, roomID: params.roomID)
+            let store = try requireMissionStore(params.roomID)
+            guard let decision = store.getDecision(params.decisionID) else {
+                throw ProtocolError(name: .invalid_params, message: "decisão \(params.decisionID) não encontrada")
+            }
+            respond(client, id: request.id, DecisionResult(decision: decision))
+        case .decisionDecide:
+            let params = try request.decodeParams(DecisionDecideParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode decidir")
+            }
+            let store = try requireMissionStore(params.roomID)
+            let decision = try store.decide(
+                id: params.decisionID, decisionText: params.decision,
+                rationale: params.rationale, deciderID: params.deciderID ?? client.author.rawValue)
+            try store.persist(to: paths)
+            broadcastToRoom(.decisionChanged, roomID: params.roomID,
+                DecisionChangedTopicPayload(roomID: params.roomID, decision: decision, change: "decided"))
+            respond(client, id: request.id, DecisionResult(decision: decision))
+        case .decisionSupersede, .decisionCancel:
+            let params = try request.decodeParams(DecisionIDParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode alterar decisão")
+            }
+            let store = try requireMissionStore(params.roomID)
+            let decision: Decision
+            if request.knownMethod == .decisionSupersede {
+                decision = try store.supersedeDecision(id: params.decisionID)
+            } else {
+                decision = try store.cancelDecision(id: params.decisionID)
+            }
+            try store.persist(to: paths)
+            broadcastToRoom(.decisionChanged, roomID: params.roomID,
+                DecisionChangedTopicPayload(roomID: params.roomID, decision: decision, change: "transitioned"))
+            respond(client, id: request.id, DecisionResult(decision: decision))
+        case .decisionList:
+            let params = try request.decodeParams(DecisionListParams.self)
+            _ = try requireRoomMember(client, roomID: params.roomID)
+            let store = try requireMissionStore(params.roomID)
+            respond(client, id: request.id,
+                store.listDecisions(missionID: params.missionID, state: params.state))
+        case .relationAdd:
+            let params = try request.decodeParams(RelationAddParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode criar relação")
+            }
+            let store = try requireMissionStore(params.roomID)
+            let relation = try store.addRelation(
+                fromID: params.fromID, toID: params.toID, kind: params.kind,
+                author: client.author, labelPosition: params.labelPosition)
+            try store.persist(to: paths)
+            broadcastToRoom(.roomUpdated, roomID: params.roomID,
+                RoomUpdatedTopicPayload(room: try requireRoom(params.roomID).getRoom()))
+            respond(client, id: request.id, RelationResult(relation: relation))
+        case .relationList:
+            let params = try request.decodeParams(RelationListParams.self)
+            _ = try requireRoomMember(client, roomID: params.roomID)
+            let store = try requireMissionStore(params.roomID)
+            respond(client, id: request.id, store.listRelations(kind: params.kind))
+        case .relationRemove:
+            let params = try request.decodeParams(RelationRemoveParams.self)
+            guard canEditRoom(client, roomID: params.roomID) else {
+                throw ProtocolError(name: .insufficient_permissions, message: "somente owner/editor pode remover relação")
+            }
+            let store = try requireMissionStore(params.roomID)
+            _ = try store.removeRelation(id: params.relationID)
+            try store.persist(to: paths)
+            broadcastToRoom(.roomUpdated, roomID: params.roomID,
+                RoomUpdatedTopicPayload(room: try requireRoom(params.roomID).getRoom()))
+            respond(client, id: request.id, EmptyResult())
         case .sessionStart:
             let params = try request.decodeParams(SessionStartParams.self)
             guard canEditWorkspace(client, workspaceID: params.workspaceID) else {
@@ -1216,13 +1578,23 @@ public final class HubServer: @unchecked Sendable {
                 throw ProtocolError(name: .internal_error, message: "Engine indisponível para \(request.method)")
             }
             var result: JSONValue?
+            let resultLock = NSLock()
             let semaphore = DispatchSemaphore(value: 0)
             conn.call(method: request.method, params: request.params) { res in
-                if case .success(let v) = res { result = v }
+                if case .success(let v) = res {
+                    resultLock.lock()
+                    result = v
+                    resultLock.unlock()
+                }
                 semaphore.signal()
             }
-            semaphore.wait()
-            guard let result else {
+            guard semaphore.wait(timeout: .now() + 12) == .success else {
+                throw ProtocolError(name: .internal_error, message: "Engine não respondeu a \(request.method)")
+            }
+            resultLock.lock()
+            let resolvedResult = result
+            resultLock.unlock()
+            guard let result = resolvedResult else {
                 throw ProtocolError(name: .internal_error, message: "Engine \(request.method) falhou")
             }
             respond(client, id: request.id, result)
@@ -1239,13 +1611,27 @@ public final class HubServer: @unchecked Sendable {
         return store
     }
 
-    private func canEditRoom(_ client: HubClient) -> Bool {
-        roomStores.values.contains { store in
-            store.getMembers(status: .active).contains { member in
-                member.id == client.author.rawValue &&
-                    (member.roles.contains(.owner) || member.roles.contains(.editor))
-            }
+    private func requireRoomMember(_ client: HubClient, roomID: ULID) throws -> RoomStore {
+        let store = try requireRoom(roomID)
+        guard store.getMembers(status: .active).contains(where: { $0.id == client.author.rawValue }) else {
+            throw ProtocolError(name: .insufficient_permissions, message: "membro não está ativo nesta sala")
         }
+        return store
+    }
+
+    private func canEditRoom(_ client: HubClient, roomID: ULID) -> Bool {
+        guard let store = roomStores[roomID] else { return false }
+        return store.getMembers(status: .active).contains { member in
+            member.id == client.author.rawValue &&
+                (member.roles.contains(.owner) || member.roles.contains(.editor))
+        }
+    }
+
+    /// Compatibilidade para métodos antigos que só recebem sessionID. Esses
+    /// métodos ainda são restritos a qualquer sala em que o autor seja editor
+    /// ou owner; métodos novos devem sempre passar o roomID explicitamente.
+    private func canEditRoom(_ client: HubClient) -> Bool {
+        roomStores.keys.contains { canEditRoom(client, roomID: $0) }
     }
 
     private func canEditWorkspace(_ client: HubClient, workspaceID: ULID) -> Bool {
@@ -1292,9 +1678,55 @@ public final class HubServer: @unchecked Sendable {
 
     private func respond(_ client: HubClient, id: String, _ value: some Encodable) {
         if let json = try? JSONValue(encoding: value) {
-            client.respond(id: id, result: json)
+            let response = ResponseMessage(id: id, result: json)
+            remember(response, for: client)
+            client.send(.response(response))
         } else {
-            client.respond(id: id, error: ProtocolError(name: .internal_error, message: "serialização falhou"))
+            sendError(client, id: id,
+                error: ProtocolError(name: .internal_error, message: "serialização falhou"))
+        }
+    }
+
+    private func sendError(
+        _ client: HubClient,
+        id: String,
+        error: ProtocolError,
+        cache: Bool = true
+    ) {
+        let response = ResponseMessage(id: id, error: error)
+        if cache { remember(response, for: client) }
+        client.send(.response(response))
+    }
+
+    private func requestCacheKey(for client: HubClient, request: RequestMessage) -> String {
+        let paramsData = (try? ColmeiaJSON.encoder().encode(request.params ?? .object([:]))) ?? Data()
+        var digest: UInt64 = 14_695_981_039_346_656_037
+        for byte in request.method.utf8 {
+            digest ^= UInt64(byte)
+            digest &*= 1_099_511_628_211
+        }
+        for byte in paramsData {
+            digest ^= UInt64(byte)
+            digest &*= 1_099_511_628_211
+        }
+        return "\(client.author.rawValue)|\(request.id)|\(String(digest, radix: 16))"
+    }
+
+    private func cachedResponse(for client: HubClient, request: RequestMessage) -> ResponseMessage? {
+        requestResponseCache[requestCacheKey(for: client, request: request)]
+    }
+
+    private func remember(_ response: ResponseMessage, for client: HubClient) {
+        let key = requestCacheContext[ObjectIdentifier(client)]
+            ?? "\(client.author.rawValue)|\(response.id)"
+        if requestResponseCache[key] == nil { requestResponseOrder.append(key) }
+        requestResponseCache[key] = response
+        if requestResponseOrder.count > requestResponseCacheLimit {
+            let removeCount = requestResponseOrder.count - requestResponseCacheLimit
+            for oldKey in requestResponseOrder.prefix(removeCount) {
+                requestResponseCache.removeValue(forKey: oldKey)
+            }
+            requestResponseOrder.removeFirst(removeCount)
         }
     }
 
@@ -1647,6 +2079,7 @@ public final class HubClient {
     private let readQueue: DispatchQueue
     private let writeQueue: DispatchQueue
     private let writeLock = NSLock()
+    private let metadataLock = NSLock()
     private var writeClosed = false
     let rateLimiter: HubRateLimiter
 
@@ -1654,7 +2087,17 @@ public final class HubClient {
     var inviteRoomID: ULID?
     var inviteToken: String?
     var joinedRoomIDs: Set<ULID> = []
-    var isWebSocket = false
+    private var webSocket = false
+    var isWebSocket: Bool {
+        get {
+            metadataLock.lock(); defer { metadataLock.unlock() }
+            return webSocket
+        }
+        set {
+            metadataLock.lock(); defer { metadataLock.unlock() }
+            webSocket = newValue
+        }
+    }
     var author: Author = .humanoLocal
     var clientName = "?"
     var subscriptions: [ColmeiaTopic: Set<ULID>] = [:]
@@ -4026,62 +4469,7 @@ public final class EngineConnection: @unchecked Sendable {
                 else { cb(.failure(resp.error ?? ProtocolError(name: .internal_error, message: "engine error"))) }
             }
         case .event(let event):
-            if let topic = event.knownTopic {
-                if case .object(let dict) = event.params {
-                    if topic == .noteAppended {
-                        if case .string(let nodeIDStr) = dict["node_id"],
-                           let nodeID = ULID(nodeIDStr),
-                           case .string(let conteudo) = dict["conteudo"],
-                           let store = hub?.storeForNode(nodeID: nodeID) {
-                            store.setNoteContent(nodeID: nodeID, content: conteudo)
-                            store.save()
-                        }
-                    } else if topic == .sessionState {
-                        if case .string(let sidStr) = dict["session_id"],
-                           let sessionID = ULID(sidStr),
-                           case .string(let estado) = dict["estado"] {
-                            let wsID: ULID?
-                            if case .string(let wsidStr) = dict["workspace_id"] { wsID = ULID(wsidStr)
-                            } else if case .string(let nidStr) = dict["node_id"] ?? dict["no_id"],
-                                      let nid = ULID(nidStr) { wsID = hub?.storeForNode(nodeID: nid)?.workspace.id
-                            } else { wsID = hub?.sessionToWorkspace[sessionID] }
-                            if let wsID, let store = hub?.workspaceStores[wsID] {
-                                store.setSessionState(sessionID: sessionID, estado: estado, nodeID: nidFromDict(dict))
-                                store.save()
-                                hub?.sessionToWorkspace[sessionID] = wsID
-                            }
-                        }
-                    } else if topic == .sessionOutput {
-                        if case .string(let sidStr) = dict["session_id"],
-                           let sessionID = ULID(sidStr),
-                           case .string(let dataB64) = dict["data_b64"],
-                           let data = Data(base64Encoded: dataB64),
-                           let text = String(data: data, encoding: .utf8) {
-                            let wsID: ULID?
-                            if case .string(let wsidStr) = dict["workspace_id"] { wsID = ULID(wsidStr)
-                            } else { wsID = hub?.sessionToWorkspace[sessionID] }
-                            if let wsID, let store = hub?.workspaceStores[wsID] {
-                                store.appendSessionOutput(sessionID: sessionID, text: text)
-                                store.save()
-                            }
-                        }
-                    } else if topic == .documentOp {
-                        if case .string(let wsidStr) = dict["workspace_id"],
-                           let wsid = ULID(wsidStr),
-                           let store = hub?.workspaceStores[wsid],
-                           let opValue = dict["op"] {
-                            do {
-                                let op = try opValue.decode(as: DocOp.self)
-                                store.applyDocOp(op)
-                                store.save()
-                            } catch {
-                                print("[Hub] engine document.op decode error: \(error)")
-                            }
-                        }
-                    }
-                }
-                hub?.broadcast(topic, ws: nil, event.params)
-            }
+            hub?.enqueueEngineEvent(event)
         case .request:
             break // Hub não processa requests do Engine
         }

@@ -1074,6 +1074,24 @@ public final class Engine: @unchecked Sendable {
                 let params = try request.decodeParams(RoomDeltaParams.self)
                 let store = try roomStore(params.roomID)
                 respondEncodable(client, id: request.id, store.buildDelta(sinceRoomSeq: params.sinceRoomSeq))
+            case .roomLayoutGet:
+                let params = try request.decodeParams(RoomLayoutGetParams.self)
+                let store = try roomStore(params.roomID)
+                respondEncodable(client, id: request.id,
+                    RoomLayoutResult(roomID: params.roomID, positions: store.getSemanticLayout()))
+            case .roomLayoutUpdate:
+                let params = try request.decodeParams(RoomLayoutUpdateParams.self)
+                guard params.position.x.isFinite, params.position.y.isFinite,
+                      abs(params.position.x) <= 1_000_000,
+                      abs(params.position.y) <= 1_000_000 else {
+                    throw ProtocolError(name: .invalid_params, message: "posição do layout fora dos limites")
+                }
+                let store = try roomStore(params.roomID)
+                let positions = store.updateSemanticLayout(
+                    objectID: params.objectID, position: params.position)
+                try persistRoom(store)
+                respondEncodable(client, id: request.id,
+                    RoomLayoutResult(roomID: params.roomID, positions: positions))
             case .roomList:
                 let rooms = roomStores.values.map { $0.getRoom() }
                     .sorted { $0.updatedAt > $1.updatedAt }
@@ -1284,6 +1302,9 @@ public final class Engine: @unchecked Sendable {
                 let store = try roomStore(params.roomID)
                 respondEncodable(client, id: request.id,
                     store.getGrants(subjectID: params.subjectID, activeOnly: params.activeOnly ?? false))
+            case .executionJobCreate, .executionJobGet, .executionJobList, .executionJobTransition:
+                throw ProtocolError(name: .invalid_params,
+                    message: "execution_job.* é uma operação do Hub remoto")
             case .presenceUpdate:
                 let params = try request.decodeParams(PresenceUpdateParams.self)
                 let store = try roomStore(params.roomID)
@@ -1327,6 +1348,8 @@ public final class Engine: @unchecked Sendable {
                     title: params.title, context: params.context,
                     definitionOfDone: params.definitionOfDone, ownerID: owner)
                 try persistMissionStore(params.roomID)
+                broadcast(.missionChanged, ws: nil,
+                    MissionChangedTopicPayload(roomID: params.roomID, mission: mission, change: "created"))
                 respondEncodable(client, id: request.id, MissionResult(mission: mission))
             case .missionGet:
                 let params = try request.decodeParams(MissionGetParams.self)
@@ -1346,6 +1369,8 @@ public final class Engine: @unchecked Sendable {
                     id: params.missionID, title: params.title, context: params.context,
                     definitionOfDone: params.definitionOfDone, ownerID: params.ownerID)
                 try persistMissionStore(params.roomID)
+                broadcast(.missionChanged, ws: nil,
+                    MissionChangedTopicPayload(roomID: params.roomID, mission: mission, change: "updated"))
                 respondEncodable(client, id: request.id, MissionResult(mission: mission))
             case .missionTransition:
                 let params = try request.decodeParams(MissionTransitionParams.self)
@@ -1353,6 +1378,8 @@ public final class Engine: @unchecked Sendable {
                 let mission = try store.transitionMission(
                     id: params.missionID, to: params.state, reason: params.reason)
                 try persistMissionStore(params.roomID)
+                broadcast(.missionChanged, ws: nil,
+                    MissionChangedTopicPayload(roomID: params.roomID, mission: mission, change: "transitioned"))
                 respondEncodable(client, id: request.id, MissionResult(mission: mission))
             case .workstreamCreate:
                 let params = try request.decodeParams(WorkstreamCreateParams.self)
@@ -1362,6 +1389,8 @@ public final class Engine: @unchecked Sendable {
                     definitionOfDone: params.definitionOfDone, assignee: params.assignee,
                     dependsOn: params.dependsOn ?? [])
                 try persistMissionStore(params.roomID)
+                broadcast(.workstreamChanged, ws: nil,
+                    WorkstreamChangedTopicPayload(roomID: params.roomID, workstream: ws, change: "created"))
                 respondEncodable(client, id: request.id, WorkstreamResult(workstream: ws))
             case .workstreamGet:
                 let params = try request.decodeParams(WorkstreamGetParams.self)
@@ -1385,12 +1414,16 @@ public final class Engine: @unchecked Sendable {
                     clearAssignee: params.clearAssignee ?? false,
                     dependsOn: params.dependsOn, blockedBy: params.blockedBy)
                 try persistMissionStore(params.roomID)
+                broadcast(.workstreamChanged, ws: nil,
+                    WorkstreamChangedTopicPayload(roomID: params.roomID, workstream: ws, change: "updated"))
                 respondEncodable(client, id: request.id, WorkstreamResult(workstream: ws))
             case .workstreamTransition:
                 let params = try request.decodeParams(WorkstreamTransitionParams.self)
                 let store = try missionStore(params.roomID)
                 let ws = try store.transitionWorkstream(id: params.workstreamID, to: params.state)
                 try persistMissionStore(params.roomID)
+                broadcast(.workstreamChanged, ws: nil,
+                    WorkstreamChangedTopicPayload(roomID: params.roomID, workstream: ws, change: "transitioned"))
                 respondEncodable(client, id: request.id, WorkstreamResult(workstream: ws))
             case .workstreamBriefing:
                 let params = try request.decodeParams(WorkstreamBriefingParams.self)
@@ -1410,6 +1443,8 @@ public final class Engine: @unchecked Sendable {
                     question: params.question, options: params.options ?? [],
                     requestedBy: client.author, dueAt: params.dueAt)
                 try persistMissionStore(params.roomID)
+                broadcast(.decisionChanged, ws: nil,
+                    DecisionChangedTopicPayload(roomID: params.roomID, decision: decision, change: "created"))
                 respondEncodable(client, id: request.id, DecisionResult(decision: decision))
             case .decisionGet:
                 let params = try request.decodeParams(DecisionGetParams.self)
@@ -1432,18 +1467,24 @@ public final class Engine: @unchecked Sendable {
                     id: params.decisionID, decisionText: params.decision,
                     rationale: params.rationale, deciderID: decider)
                 try persistMissionStore(params.roomID)
+                broadcast(.decisionChanged, ws: nil,
+                    DecisionChangedTopicPayload(roomID: params.roomID, decision: decision, change: "decided"))
                 respondEncodable(client, id: request.id, DecisionResult(decision: decision))
             case .decisionSupersede:
                 let params = try request.decodeParams(DecisionIDParams.self)
                 let store = try missionStore(params.roomID)
                 let decision = try store.supersedeDecision(id: params.decisionID)
                 try persistMissionStore(params.roomID)
+                broadcast(.decisionChanged, ws: nil,
+                    DecisionChangedTopicPayload(roomID: params.roomID, decision: decision, change: "transitioned"))
                 respondEncodable(client, id: request.id, DecisionResult(decision: decision))
             case .decisionCancel:
                 let params = try request.decodeParams(DecisionIDParams.self)
                 let store = try missionStore(params.roomID)
                 let decision = try store.cancelDecision(id: params.decisionID)
                 try persistMissionStore(params.roomID)
+                broadcast(.decisionChanged, ws: nil,
+                    DecisionChangedTopicPayload(roomID: params.roomID, decision: decision, change: "transitioned"))
                 respondEncodable(client, id: request.id, DecisionResult(decision: decision))
             case .relationAdd:
                 let params = try request.decodeParams(RelationAddParams.self)
@@ -2839,7 +2880,7 @@ public final class Engine: @unchecked Sendable {
             dest.journal.append(
                 .system(SystemEventPayload(name: message.systemName, message: message.texto)),
                 author: .sistema)
-            sessionInput(dest, data: Data((message.texto + "\r").utf8), author: .sistema, terminalInput: false)
+            sendAutomatedCommand(message.texto, to: dest, author: .sistema)
             return
         }
         dest.journal.append(
@@ -2852,11 +2893,17 @@ public final class Engine: @unchecked Sendable {
             wait.sawOutput = false
         }
         // default DEVE ser texto puro + \r (§14.1.3)
-        sessionInput(dest, data: Data((message.texto + "\r").utf8), author: .agente(message.deNode.string), terminalInput: false)
+        sendAutomatedCommand(message.texto, to: dest, author: .agente(message.deNode.string))
         broadcast(.messageDelivered, ws: dest.workspaceID, MessageDeliveredTopicPayload(
             de: message.deNode, para: dest.nodeID, texto: message.texto, messageID: message.id))
         recordSemanticEvent(SemanticEvent(workspaceID: dest.workspaceID, sessionID: dest.id, nodeID: dest.nodeID, kind: .userMessage, text: message.texto, metadata: ["from_node_id": message.deNode.string, "message_id": message.id.string]))
         ensureConversaConnection(ws: dest.workspaceID, entre: message.deNode, e: dest.nodeID)
+    }
+
+    private func sendAutomatedCommand(_ text: String, to session: LiveSession, author: Author) {
+        sessionInput(session, data: Data(text.utf8), author: author, terminalInput: false)
+        guard session.estado.isViva else { return }
+        sessionInput(session, data: Data([0x0D]), author: author, terminalInput: false)
     }
 
     private func deliverQueued(_ session: LiveSession) {

@@ -15,13 +15,18 @@ struct HubOutboxTests {
             roomID: roomID, title: "X", definitionOfDone: "D"
         ))
         let outbox = HubOutbox(roomID: roomID, paths: paths)
-        let entry = try outbox.enqueue(method: .missionCreate, paramsJSON: params)
+        let entry = try outbox.enqueue(
+            method: .missionCreate,
+            paramsJSON: params,
+            requestID: "offline-test-1"
+        )
         #expect(outbox.pendingCount == 1)
         #expect(outbox.pending().first?.method == .missionCreate)
 
         let restored = HubOutbox(roomID: roomID, paths: paths)
         #expect(restored.pendingCount == 1)
         #expect(restored.pending().first?.id == entry.id)
+        #expect(restored.pending().first?.requestID == "offline-test-1")
 
         try restored.remove(id: entry.id)
         #expect(restored.pendingCount == 0)

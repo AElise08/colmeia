@@ -14,11 +14,15 @@ public enum ColmeiaTopic: String, Codable, CaseIterable, Sendable {
     case floorChanged = "floor.changed"
     case memoryChanged = "memory.changed"
     case deliveryChanged = "delivery.changed"
+    case missionChanged = "mission.changed"
+    case workstreamChanged = "workstream.changed"
+    case decisionChanged = "decision.changed"
     case watchdogAlert = "watchdog.alert"
     case workerArchived = "worker.archived"
     case engineWarning = "engine.warning"
     // Multiplayer (§6.1)
     case roomUpdated = "room.updated"
+    case roomLayoutChanged = "room.layout.changed"
     case memberJoined = "member.joined"
     case memberLeft = "member.left"
     case memberUpdated = "member.updated"
@@ -190,6 +194,60 @@ public struct MemoryChangedTopicPayload: Codable, Equatable, Sendable {
     }
 }
 
+/// Mudanças semânticas da Sala. O payload completo permite que clientes
+/// atualizem o agregado sem buscar uma segunda fonte e mantém `change` apenas
+/// como pista de apresentação/auditoria.
+public struct MissionChangedTopicPayload: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var mission: Mission
+    public var change: String
+
+    enum CodingKeys: String, CodingKey {
+        case mission, change
+        case roomID = "room_id"
+    }
+
+    public init(roomID: ULID, mission: Mission, change: String = "updated") {
+        self.roomID = roomID
+        self.mission = mission
+        self.change = change
+    }
+}
+
+public struct WorkstreamChangedTopicPayload: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var workstream: Workstream
+    public var change: String
+
+    enum CodingKeys: String, CodingKey {
+        case workstream, change
+        case roomID = "room_id"
+    }
+
+    public init(roomID: ULID, workstream: Workstream, change: String = "updated") {
+        self.roomID = roomID
+        self.workstream = workstream
+        self.change = change
+    }
+}
+
+public struct DecisionChangedTopicPayload: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var decision: Decision
+    public var change: String
+
+    enum CodingKeys: String, CodingKey {
+        case decision, change
+        case roomID = "room_id"
+    }
+
+    public init(roomID: ULID, decision: Decision, change: String = "updated") {
+        self.roomID = roomID
+        self.decision = decision
+        self.change = change
+    }
+}
+
 public struct DeliveryChangedTopicPayload: Codable, Equatable, Sendable {
     public var delivery: Delivery
 
@@ -251,6 +309,28 @@ public struct RoomUpdatedTopicPayload: Codable, Equatable, Sendable {
     public var room: Room
 
     public init(room: Room) { self.room = room }
+}
+
+public struct RoomLayoutChangedTopicPayload: Codable, Equatable, Sendable {
+    public var roomID: ULID
+    public var objectID: ULID
+    public var position: Ponto
+    /// Snapshot pequeno do layout para clientes que perderam eventos durante
+    /// uma reconexão; a posição individual continua sendo o delta principal.
+    public var positions: [String: Ponto]
+
+    enum CodingKeys: String, CodingKey {
+        case position, positions
+        case roomID = "room_id"
+        case objectID = "object_id"
+    }
+
+    public init(roomID: ULID, objectID: ULID, position: Ponto, positions: [String: Ponto]) {
+        self.roomID = roomID
+        self.objectID = objectID
+        self.position = position
+        self.positions = positions
+    }
 }
 
 public struct MemberJoinedTopicPayload: Codable, Equatable, Sendable {

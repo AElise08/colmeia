@@ -173,6 +173,15 @@ Regras:
 - Sala archived é somente leitura, salvo reabertura explícita por owner.
 - Sala NÃO DEVE ser listada para identidade não autorizada.
 
+#### 5.1.1 Layout semântico da Sala
+
+O layout dos objetos semânticos da Sala é um mapa persistente `object_id →
+position` (coordenadas finitas). O Hub expõe `room.layout.get` e
+`room.layout.update`, publica `room.layout.changed` aos membros da Sala e
+aceita replay offline com o mesmo request id sem duplicar a mutação. A posição
+é estado compartilhável; PTYs, paths, cookies e conteúdo privado continuam
+fora do Hub.
+
 ### 5.2 Missão
 
 Missão representa um resultado de trabalho, não uma tarefa genérica.
@@ -616,9 +625,9 @@ Antes de uso externo, Hub deve:
 - ter restauração testada;
 - ter health check e alerta de disco baixo.
 
-### 12.3 Worker remoto futuro
+### 12.3 Worker remoto restrito
 
-Worker só pode receber job tipado, autenticado e autorizado. Deve usar allowlist, grant com escopo e expiração, isolamento por job, usuário sem privilégios e secret manager. Mensagem de Sala nunca é comando.
+O worker remoto recebe somente jobs tipados (`execution_job.create/get/list/transition`), autenticados e autorizados. A execução exige grant ativo com escopo exato (`command:<comando>`), expiração e isolamento por job. Mensagem ou direção de Sala nunca é comando; elas apenas registram intenção até que um job seja criado por uma identidade autorizada.
 
 ## 13. Persistência local
 
@@ -753,7 +762,7 @@ Uso local não deve depender de conta ou telemetria. Colaboração remota deve d
 | Sala | viewer não altera; editor não administra; eventos não cruzam Sala |
 | Recuperação | snapshot mais delta converge após rede intermitente ou reinício |
 | Privacidade | transporte e log não contêm PTY, segredo, .env, cookie ou path absoluto |
-| Worker futuro | texto de Sala nunca é executado como comando |
+| Worker | texto de Sala nunca é executado como comando |
 
 ## 18. Fonte de verdade documental
 
