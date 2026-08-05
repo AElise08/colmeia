@@ -20,6 +20,15 @@ public enum ColmeiaTopic: String, Codable, CaseIterable, Sendable {
     case watchdogAlert = "watchdog.alert"
     case workerArchived = "worker.archived"
     case engineWarning = "engine.warning"
+    // Control plane visual — atividade auditável, sem conteúdo de prompt/output.
+    case telemetrySample = "telemetry.sample"
+    case telemetryActivity = "telemetry.activity"
+    case telemetryAggregateChanged = "telemetry.aggregate.changed"
+    case telemetryBudgetAlert = "telemetry.budget.alert"
+    case connectionActivity = "connection.activity"
+    case fileActivity = "file.activity"
+    case portalActivity = "portal.activity"
+    case deployStateChanged = "deploy.state.changed"
     // Multiplayer (§6.1)
     case roomUpdated = "room.updated"
     case roomLayoutChanged = "room.layout.changed"
@@ -37,6 +46,17 @@ public enum ColmeiaTopic: String, Codable, CaseIterable, Sendable {
     case handoffRequested = "handoff.requested"
     case handoffAccepted = "handoff.accepted"
     case conductorChanged = "conductor.changed"
+
+    /// Payload novo não é enviado a engines antigos: SubscribeParams usa um
+    /// enum fechado no wire e um cliente novo precisa manter compatibilidade.
+    public static var legacyCompatibleCases: [ColmeiaTopic] {
+        let additions: Set<ColmeiaTopic> = [
+            .telemetrySample, .telemetryActivity, .telemetryAggregateChanged,
+            .telemetryBudgetAlert, .connectionActivity, .fileActivity, .portalActivity,
+            .deployStateChanged
+        ]
+        return allCases.filter { !additions.contains($0) }
+    }
 }
 
 public struct SessionOutputTopicPayload: Codable, Equatable, Sendable {
@@ -130,6 +150,67 @@ public struct MessageDeliveredTopicPayload: Codable, Equatable, Sendable {
         self.texto = texto
         self.messageID = messageID
     }
+}
+
+public struct TelemetrySampleTopicPayload: Codable, Equatable, Sendable {
+    public var sample: UsageSample
+
+    public init(sample: UsageSample) { self.sample = sample }
+}
+
+public struct TelemetryAggregateChangedTopicPayload: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var snapshot: TelemetrySnapshot
+
+    enum CodingKeys: String, CodingKey {
+        case snapshot
+        case workspaceID = "workspace_id"
+    }
+
+    public init(workspaceID: ULID, snapshot: TelemetrySnapshot) {
+        self.workspaceID = workspaceID
+        self.snapshot = snapshot
+    }
+}
+
+public struct TelemetryBudgetAlertTopicPayload: Codable, Equatable, Sendable {
+    public var workspaceID: ULID
+    public var threshold: Double
+    public var percent: Double
+
+    enum CodingKeys: String, CodingKey {
+        case threshold, percent
+        case workspaceID = "workspace_id"
+    }
+
+    public init(workspaceID: ULID, threshold: Double, percent: Double) {
+        self.workspaceID = workspaceID
+        self.threshold = threshold
+        self.percent = percent
+    }
+}
+
+public struct ConnectionActivityTopicPayload: Codable, Equatable, Sendable {
+    public var event: ConnectionActivityEvent
+
+    public init(event: ConnectionActivityEvent) { self.event = event }
+}
+
+public struct FileActivityTopicPayload: Codable, Equatable, Sendable {
+    public var event: FileActivityEvent
+
+    public init(event: FileActivityEvent) { self.event = event }
+}
+
+public struct PortalActivityTopicPayload: Codable, Equatable, Sendable {
+    public var event: PortalActivityEvent
+
+    public init(event: PortalActivityEvent) { self.event = event }
+}
+
+public struct DeployStateChangedTopicPayload: Codable, Equatable, Sendable {
+    public var request: DeployRequest
+    public init(request: DeployRequest) { self.request = request }
 }
 
 public struct NoteAppendedTopicPayload: Codable, Equatable, Sendable {

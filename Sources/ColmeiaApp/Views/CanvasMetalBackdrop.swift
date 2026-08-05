@@ -18,7 +18,7 @@ struct CanvasMetalBackdrop: NSViewRepresentable {
         view.preferredFramesPerSecond = 30
         view.framebufferOnly = true
         view.colorPixelFormat = .bgra8Unorm
-        view.clearColor = MTLClearColor(red: 0.075, green: 0.078, blue: 0.085, alpha: 1)
+        view.clearColor = MTLClearColor(red: 0.025, green: 0.040, blue: 0.070, alpha: 1)
         view.delegate = context.coordinator
         context.coordinator.viewport = viewport
         view.isPaused = isInteracting
@@ -81,11 +81,11 @@ final class LiquidGlassRenderer: NSObject, MTKViewDelegate {
             float wave = sin((uv.x * 4.2 + uv.y * 2.1) + time * 0.18) * 0.5 + 0.5;
             float ripple = sin((uv.x - uv.y) * 7.0 - time * 0.11) * 0.5 + 0.5;
             float glass = wave * 0.55 + ripple * 0.45;
-            float3 base = float3(0.075, 0.078, 0.085);
-            float3 cool = float3(0.20, 0.40, 0.62);
+            float3 base = float3(0.025, 0.040, 0.070);
+            float3 cool = float3(0.12, 0.34, 0.72);
             float3 warm = float3(0.55, 0.33, 0.16);
-            float3 color = mix(base, cool, glass * 0.10);
-            color = mix(color, warm, (1.0 - glass) * 0.035);
+            float3 color = mix(base, cool, glass * 0.18);
+            color = mix(color, warm, (1.0 - glass) * 0.025);
             return float4(color, 1.0);
         }
         """

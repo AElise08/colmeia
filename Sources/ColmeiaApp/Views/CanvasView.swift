@@ -184,10 +184,13 @@ private struct MissionCanvasOverlay: View {
         }
         .padding(12)
         .frame(width: 330, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.quaternary, lineWidth: 1))
-        .shadow(color: .black.opacity(0.12), radius: 14, y: 5)
-        .padding(14)
+        .foregroundStyle(ColmeiaCanvasTheme.ink)
+        .background(ColmeiaCanvasTheme.surface.opacity(0.96), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(ColmeiaCanvasTheme.line, lineWidth: 1))
+        .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
+        .padding(.top, 64)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 14)
     }
 
     private func missionColor(_ state: MissionState) -> SwiftUI.Color {
@@ -367,11 +370,12 @@ private struct MissionFrameCard: View {
             }
         }
         .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .foregroundStyle(ColmeiaCanvasTheme.ink)
+        .background(ColmeiaCanvasTheme.surface.opacity(0.96), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(stateColor.opacity(0.65), lineWidth: 1.5))
-        .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+                .stroke(stateColor.opacity(0.7), lineWidth: 1.5))
+        .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
     }
 
     private var stateColor: SwiftUI.Color {
@@ -407,31 +411,54 @@ struct CanvasView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            canvasModeBar
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
                 // Metal fica estritamente atrás da interação SwiftUI. A grade por
                 // cima conserva a orientação espacial mesmo quando o efeito de
                 // vidro está animado.
+                CanvasAtmosphere()
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
                 CanvasMetalBackdrop(viewport: store.viewport, isInteracting: canvasInteracting)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
-                GridBackground(viewport: store.viewport)
+                HexagonalGridBackground(viewport: store.viewport, isInteracting: canvasInteracting)
+                    .allowsHitTesting(false)
+                Color.clear
                     .contentShape(Rectangle())
                     .gesture(panGesture)
                     .onTapGesture {
-                        store.selection = nil
-                        store.connectionSelection = nil
-                        store.returnFocusToCanvas()
+                        if store.connectionSourceID != nil {
+                            store.connectionSourceID = nil
+                            store.avisoInfo = "Modo de conexão cancelado."
+                        } else {
+                            store.selection = nil
+                            store.connectionSelection = nil
+                            store.returnFocusToCanvas()
+                        }
                     }
+                canvasModeBar
+                if let source = store.connectionSourceID {
+                    ConnectionModeBanner(nodeName: store.nodeName(source))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 62)
+                        .padding(.leading, 16)
+                }
                 if store.canvasViewMode == .missao {
                     MissionCanvasOverlay()
                     MissionSemanticLayer()
                 }
                 ConnectionsLayer(isInteracting: canvasInteracting)
                 nodeLayer
+                if store.canvasViewMode == .execucao || store.canvasViewMode == .missao {
+                    DeliveryCanvasLayer()
+                }
                 if store.canvasViewMode == .atencao {
                     attentionOverlay
+                }
+                if store.canvasViewMode == .execucao {
+                    ExecutionTelemetryHUD()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
                 RemotePresenceLayer()
                 if store.ferramentaDesenho != nil {
@@ -483,23 +510,38 @@ struct CanvasView: View {
             }
             }
         }
+        .background(ColmeiaCanvasTheme.canvas.ignoresSafeArea())
     }
 
     private var canvasModeBar: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 3) {
             ForEach(CanvasViewMode.allCases) { mode in
                 Button {
                     store.canvasViewMode = mode
                 } label: {
-                    Label(mode.titulo, systemImage: mode.simbolo)
-                        .font(.caption)
+                    Label(shortTitle(for: mode), systemImage: mode.simbolo)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(store.canvasViewMode == mode ? ColmeiaCanvasTheme.ink : ColmeiaCanvasTheme.mutedInk)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(
+                            store.canvasViewMode == mode ? ColmeiaCanvasTheme.surfaceRaised : Color.clear,
+                            in: Capsule()
+                        )
+                        .overlay {
+                            if store.canvasViewMode == mode {
+                                Capsule().stroke(ColmeiaCanvasTheme.amber.opacity(0.55), lineWidth: 1)
+                            }
+                        }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(store.canvasViewMode == mode ? .accentColor : .secondary)
+                .buttonStyle(.plain)
+                .help(mode.titulo)
             }
-            Spacer()
+
             if store.canvasViewMode == .missao && !store.missions.isEmpty {
+                Divider()
+                    .frame(height: 18)
+                    .overlay(ColmeiaCanvasTheme.line)
                 Menu {
                     Button("Todas as missões") { store.canvasFiltroMissao = nil }
                     Divider()
@@ -511,24 +553,47 @@ struct CanvasView: View {
                         }
                     }
                 } label: {
-                    Label(
-                        store.canvasMission?.title ?? "Selecionar missão",
-                        systemImage: "flag.checkered")
-                        .font(.caption)
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ColmeiaCanvasTheme.amber)
+                        .padding(7)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
-            if store.canvasFiltroMissao != nil {
-                Button("Limpar filtro de missão") {
-                    store.canvasFiltroMissao = nil
-                }
-                .font(.caption)
+
+            Divider()
+                .frame(height: 18)
+                .overlay(ColmeiaCanvasTheme.line)
+            Button(action: store.toggleConnectionModeFromSelection) {
+                Label(
+                    store.connectionSourceID == nil ? "Conectar" : "Cancelar",
+                    systemImage: store.connectionSourceID == nil ? "link" : "xmark"
+                )
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(store.connectionSourceID == nil ? ColmeiaCanvasTheme.cyan : ColmeiaCanvasTheme.amber)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
             }
+            .buttonStyle(.plain)
+            .help("Selecione um nó, clique em Conectar e depois clique no nó de destino")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(.thinMaterial)
+        .padding(4)
+        .background(ColmeiaCanvasTheme.surface.opacity(0.94), in: Capsule())
+        .overlay(Capsule().stroke(ColmeiaCanvasTheme.line, lineWidth: 1))
+        .shadow(color: .black.opacity(0.28), radius: 14, y: 6)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .padding(.top, 14)
+    }
+
+    private func shortTitle(for mode: CanvasViewMode) -> String {
+        switch mode {
+        case .livre: return "Livre"
+        case .missao: return "Missão"
+        case .equipe: return "Equipe"
+        case .atencao: return "Atenção"
+        case .execucao: return "Execução"
+        }
     }
 
     private var visibleWorldRect: CGRect {
@@ -609,9 +674,10 @@ struct CanvasView: View {
                 .controlSize(.small)
             }
             .padding(12)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.quaternary, lineWidth: 1))
-            .shadow(color: .black.opacity(0.12), radius: 14, y: 5)
+            .foregroundStyle(ColmeiaCanvasTheme.ink)
+            .background(ColmeiaCanvasTheme.surface.opacity(0.96), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(ColmeiaCanvasTheme.line, lineWidth: 1))
+            .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
             .padding(16)
         }
         .allowsHitTesting(true)
@@ -676,6 +742,120 @@ struct CanvasView: View {
     }
 }
 
+/// Cartões de entrega ficam no mesmo espaço dos nós para que revisão e estado
+/// operacional não dependam de um painel separado. A lista é limitada para
+/// preservar a fluidez em workspaces grandes.
+private struct DeliveryCanvasLayer: View {
+    @EnvironmentObject private var store: AppStore
+
+    private var visibleDeliveries: [Delivery] {
+        Array(store.deliveries
+            .filter { $0.estado != .draft }
+            .sorted { $0.atualizadaEm > $1.atualizadaEm }
+            .prefix(16))
+    }
+
+    var body: some View {
+        ForEach(Array(visibleDeliveries.enumerated()), id: \.element.id) { index, delivery in
+            let anchor = anchor(for: delivery, index: index)
+            DeliveryCanvasCard(
+                delivery: delivery,
+                onAccept: { Task { await store.acceptDelivery(delivery.id) } },
+                onReopen: { Task { await store.reopenDelivery(delivery.id) } })
+                .frame(width: 292)
+                .scaleEffect(store.viewport.zoom, anchor: .topLeading)
+                .offset(
+                    x: (anchor.x - store.viewport.x) * store.viewport.zoom,
+                    y: (anchor.y - store.viewport.y) * store.viewport.zoom)
+                .zIndex(0.2)
+        }
+    }
+
+    private func anchor(for delivery: Delivery, index: Int) -> Ponto {
+        if let node = store.nodes[delivery.nodeID] {
+            return Ponto(x: node.posicao.x, y: node.posicao.y + node.tamanho.h + 12)
+        }
+        return Ponto(x: 40 + Double(index % 4) * 280, y: 40 + Double(index / 4) * 150)
+    }
+}
+
+private struct DeliveryCanvasCard: View {
+    let delivery: Delivery
+    let onAccept: () -> Void
+    let onReopen: () -> Void
+
+    private var status: (String, SwiftUI.Color, String) {
+        switch delivery.estado {
+        case .accepted: return ("Aceita", .green, "checkmark.circle.fill")
+        case .proposed: return ("Aguardando revisão", .blue, "shippingbox.fill")
+        case .reopened: return ("Reaberta", .orange, "arrow.uturn.backward")
+        case .partial: return ("Parcial", .orange, "circle.lefthalf.filled")
+        case .blocked: return ("Bloqueada", .red, "hand.raised.fill")
+        case .failed: return ("Falhou", .red, "xmark.octagon.fill")
+        case .draft: return ("Rascunho", .secondary, "doc")
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(status.1.opacity(0.15))
+                    Image(systemName: status.2)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(status.1)
+                }
+                .frame(width: 26, height: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("DELIVERY PACKET")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .tracking(1.0)
+                        .foregroundStyle(ColmeiaCanvasTheme.mutedInk)
+                    Text(status.0)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ColmeiaCanvasTheme.ink)
+                }
+                Spacer()
+                Text("\(delivery.evidencias.count) evidência\(delivery.evidencias.count == 1 ? "" : "s")")
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .foregroundStyle(ColmeiaCanvasTheme.mutedInk)
+            }
+            Text(delivery.resumo)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(ColmeiaCanvasTheme.ink.opacity(0.9))
+                .lineLimit(3)
+                .textSelection(.enabled)
+            if !delivery.evidencias.isEmpty {
+                Text(delivery.evidencias.map { $0.tipo.rawValue.replacingOccurrences(of: "_", with: " ") }.joined(separator: " · "))
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .foregroundStyle(ColmeiaCanvasTheme.cyan.opacity(0.85))
+                    .lineLimit(1)
+            }
+            Divider().overlay(ColmeiaCanvasTheme.line)
+            if delivery.aceita {
+                Button("Reabrir", action: onReopen)
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+            } else if delivery.estado == .proposed || delivery.estado == .reopened {
+                Button("Aceitar", action: onAccept)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+            }
+        }
+        .padding(10)
+        .background(ColmeiaCanvasTheme.surface.opacity(0.96), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(status.1)
+                .frame(width: 3)
+                .padding(.vertical, 9)
+        }
+        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(status.1.opacity(0.34), lineWidth: 1))
+        .shadow(color: .black.opacity(0.30), radius: 16, y: 7)
+    }
+}
+
 private final class LastEscBox {
     var value: Date?
 }
@@ -687,6 +867,50 @@ private func terminalAncestral(of view: NSView) -> TerminalView? {
         atual = v.superview
     }
     return nil
+}
+
+/// Grade hexagonal decorativa: linguagem visual da Colmeia, sem snap obrigatório
+/// e sem limitar o número de conexões. A flag permite desligá-la em máquinas
+/// econômicas ou durante diagnóstico visual.
+struct HexagonalGridBackground: View {
+    let viewport: Viewport
+    let isInteracting: Bool
+    @AppStorage("colmeia.visual.hexGrid") private var enabled = true
+
+    var body: some View {
+        if enabled {
+            Canvas { context, size in
+                let scale = viewport.zoom
+                let radius = max(32, 64 * scale)
+                let horizontal = radius * 1.5
+                let vertical = radius * sqrt(3)
+                guard horizontal > 10, vertical > 10 else { return }
+                let originX = -((viewport.x * scale).truncatingRemainder(dividingBy: horizontal)) - radius
+                let originY = -((viewport.y * scale).truncatingRemainder(dividingBy: vertical)) - radius
+                var path = Path()
+                var row = 0
+                var y = originY
+                while y < size.height + vertical {
+                    var x = originX + (row.isMultiple(of: 2) ? 0 : horizontal * 0.5)
+                    while x < size.width + horizontal {
+                        let center = CGPoint(x: x, y: y)
+                        for side in 0..<6 {
+                            let a = Double(side) * .pi / 3
+                            let b = Double(side + 1) * .pi / 3
+                            let p1 = CGPoint(x: center.x + radius * cos(a), y: center.y + radius * sin(a))
+                            let p2 = CGPoint(x: center.x + radius * cos(b), y: center.y + radius * sin(b))
+                            if side == 0 { path.move(to: p1) }
+                            path.addLine(to: p2)
+                        }
+                        x += horizontal
+                    }
+                    y += vertical
+                    row += 1
+                }
+                context.stroke(path, with: .color(ColmeiaCanvasTheme.cyan.opacity(isInteracting ? 0.010 : 0.028)), lineWidth: 0.8)
+            }
+        }
+    }
 }
 
 /// Grade sutil indicando escala (§18.2).
@@ -722,6 +946,28 @@ struct GridBackground: View {
 /// alça de conexão (§5.3). Gestos medem no espaço nomeado do canvas: a base é
 /// capturada no primeiro onChanged e a translação (tela ÷ zoom) aplicada sobre ela —
 /// nunca sobre a posição corrente, que muda durante o gesto.
+private struct ConnectionModeBanner: View {
+    let nodeName: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "link")
+                .foregroundStyle(ColmeiaCanvasTheme.cyan)
+            Text("Conectando a (nodeName)")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(ColmeiaCanvasTheme.ink)
+            Text("· clique no nó de destino")
+                .font(.system(size: 10, design: .rounded))
+                .foregroundStyle(ColmeiaCanvasTheme.mutedInk)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(ColmeiaCanvasTheme.surface.opacity(0.96), in: Capsule())
+        .overlay(Capsule().stroke(ColmeiaCanvasTheme.cyan.opacity(0.36), lineWidth: 1))
+        .shadow(color: .black.opacity(0.22), radius: 10, y: 4)
+    }
+}
+
 struct NodeContainerView: View {
     let node: Node
     let zoom: Double
@@ -743,12 +989,27 @@ struct NodeContainerView: View {
             .overlay {
                 if store.selection == node.id {
                     RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.accentColor, lineWidth: 2 / zoom)
+                        .stroke(ColmeiaCanvasTheme.amber, lineWidth: 2 / zoom)
                 }
             }
+            .overlay {
+                if store.connectionSourceID != nil, store.connectionSourceID != node.id {
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(ColmeiaCanvasTheme.cyan.opacity(0.78), style: StrokeStyle(lineWidth: 1.5 / zoom, dash: [5, 4]))
+                }
+            }
+            .shadow(
+                color: nodeAccent.opacity(store.selection == node.id ? 0.30 : (hovering ? 0.16 : 0.06)),
+                radius: store.selection == node.id ? 16 : 8,
+                y: 5
+            )
             .onTapGesture {
-                store.selection = node.id
-                store.connectionSelection = nil
+                if store.connectionSourceID != nil, store.connectionSourceID != node.id {
+                    store.finishConnection(to: node.id)
+                } else {
+                    store.selection = node.id
+                    store.connectionSelection = nil
+                }
             }
             .onHover { dentro in
                 hovering = dentro
@@ -856,25 +1117,50 @@ struct NodeContainerView: View {
         }
     }
 
+    private var nodeAccent: SwiftUI.Color {
+        switch node {
+        case .terminal:
+            return ColmeiaCanvasTheme.status(store.terminalControllers[node.id]?.estado)
+        case .nota:
+            return ColmeiaCanvasTheme.amber
+        case .portal:
+            return ColmeiaCanvasTheme.cyan
+        case .desenho:
+            return ColmeiaCanvasTheme.violet
+        }
+    }
+
     /// Alça de conexão (§5.3): aparece no hover; arrastar até outro nó cria a
     /// Connection com a semântica do par (terminal→nota = escrita-de-nota,
     /// terminal→terminal = conversa, resto = visual).
     @ViewBuilder
     private var connectionHandle: some View {
-        if hovering || conectando {
-            ZStack {
-                Circle()
-                    .fill(Color(nsColor: .windowBackgroundColor))
-                Circle()
-                    .stroke(Color.accentColor, lineWidth: 1.5)
-                Image(systemName: "link")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(Color.accentColor)
+        if hovering || conectando || store.selection == node.id || store.connectionSourceID != nil {
+            Button {
+                if store.connectionSourceID == nil {
+                    store.beginConnection(from: node.id)
+                } else {
+                    store.finishConnection(to: node.id)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: store.connectionSourceID == node.id ? "xmark" : "link")
+                        .font(.system(size: 8, weight: .bold))
+                    if hovering || store.selection == node.id {
+                        Text(store.connectionSourceID == node.id ? "Cancelar" : "Conectar")
+                            .font(.system(size: 8, weight: .bold, design: .rounded))
+                    }
+                }
+                .foregroundStyle(store.connectionSourceID == node.id ? ColmeiaCanvasTheme.amber : ColmeiaCanvasTheme.cyan)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(ColmeiaCanvasTheme.surfaceRaised, in: Capsule())
+                .overlay(Capsule().stroke(ColmeiaCanvasTheme.cyan.opacity(0.38), lineWidth: 1))
             }
-            .frame(width: 16, height: 16)
+            .buttonStyle(.plain)
             .contentShape(Circle().inset(by: -6))
-            .offset(x: 8)
-            .help("Arraste até outro nó para conectar")
+            .offset(x: 12)
+            .help(store.connectionSourceID == nil ? "Iniciar conexão" : "Conectar a este nó")
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .named(CanvasSpace.nome))
                     .onChanged { value in
@@ -967,9 +1253,9 @@ struct MinimapView: View {
             .foregroundStyle(.secondary)
             .padding(8)
         }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.42), lineWidth: 0.8))
-        .shadow(color: .black.opacity(0.10), radius: 12, y: 5)
+        .background(ColmeiaCanvasTheme.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(ColmeiaCanvasTheme.line, lineWidth: 0.8))
+        .shadow(color: .black.opacity(0.24), radius: 16, y: 7)
         .opacity(0.94)
         .allowsHitTesting(false)
     }

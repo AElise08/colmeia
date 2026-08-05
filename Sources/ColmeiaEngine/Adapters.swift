@@ -93,6 +93,21 @@ public struct ApprovalDraft: Equatable, Sendable {
     }
 }
 
+/// Contexto sem output bruto para um hook oficial do provider. Adapters podem
+/// consultar um arquivo/API estruturado do próprio CLI e devolver UsageSample;
+/// regex sobre o terminal não é uma implementação válida deste contrato.
+public struct AdapterTelemetryContext: Sendable {
+    public var session: Session
+    public var workspace: Workspace
+    public var recordedAt: Date
+
+    public init(session: Session, workspace: Workspace, recordedAt: Date = Date()) {
+        self.session = session
+        self.workspace = workspace
+        self.recordedAt = recordedAt
+    }
+}
+
 /// §10 — todo conhecimento específico de motor vive aqui; o engine não conhece
 /// binário, regex nem formato de nenhum motor (§4.6).
 public protocol AgentAdapter: Sendable {
@@ -105,12 +120,16 @@ public protocol AgentAdapter: Sendable {
     func detectApproval(_ contexto: AdapterContexto) throws -> ApprovalDraft?
     /// Bytes exatos que o motor espera; nil = não mapeável → `invalid_params` (§10.4).
     func injectReply(_ approval: Approval, decisao: ApprovalDecisao, opcaoIndex: Int?) -> Data?
+    /// Hook opcional para contadores oficiais do provider. nil significa que o
+    /// provider ainda não disponibilizou telemetria estruturada.
+    func collectUsage(_ context: AdapterTelemetryContext) throws -> UsageSample?
 }
 
 public extension AgentAdapter {
     func classify(_ contexto: AdapterContexto) throws -> SessionEstado? { nil }
     func detectApproval(_ contexto: AdapterContexto) throws -> ApprovalDraft? { nil }
     func injectReply(_ approval: Approval, decisao: ApprovalDecisao, opcaoIndex: Int?) -> Data? { nil }
+    func collectUsage(_ context: AdapterTelemetryContext) throws -> UsageSample? { nil }
 }
 
 /// Registro plugável (§4.6): motor novo = adapter novo, zero mudança no engine (25.3.1).

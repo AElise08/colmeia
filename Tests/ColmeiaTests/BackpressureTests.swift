@@ -45,4 +45,18 @@ struct BackpressureTests {
         #expect(client.backpressureWarningEnqueuedForTesting)
         #expect(client.backpressureScheduledForTesting)
     }
+
+    @Test func respostaGrandeDeReplayNaoDisparaBackpressureDeEventos() {
+        let engine = Engine(paths: ColmeiaPaths(root: URL(fileURLWithPath: NSTemporaryDirectory())))
+        let client = ClientConnection(fd: -1, engine: engine, writerEnabled: false)
+        let replay = JSONValue.string(String(repeating: "r", count: ClientConnection.maxQueuedBytes + 1))
+
+        client.respond(id: "attach", result: replay)
+
+        #expect(client.queuedEventCountForTesting == 0)
+        #expect(client.queuedByteCountForTesting == 0)
+        #expect(client.queuedTotalByteCountForTesting > ClientConnection.maxQueuedBytes)
+        #expect(!client.backpressureWarningEnqueuedForTesting)
+        #expect(!client.backpressureScheduledForTesting)
+    }
 }

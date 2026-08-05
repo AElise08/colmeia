@@ -155,7 +155,12 @@ final class ClientConnection {
     private let writeLock = NSLock()
     private var writeClosed = false
     private var outbox: [Outbound] = []
-    private var queuedBytes = 0
+    /// Backpressure é uma política para eventos assíncronos. Respostas podem ser
+    /// grandes legitimamente (por exemplo, `session.attach` com o replay de um
+    /// journal) e não devem ser confundidas com um cliente que parou de drenar
+    /// eventos.
+    private var queuedEventCount = 0
+    private var queuedEventBytes = 0
     private var drainScheduled = false
     private var backpressureDisconnectScheduled = false
     private var backpressureWarningEnqueued = false
@@ -180,12 +185,13 @@ final class ClientConnection {
     static let maxQueuedBytes = 8 * 1024 * 1024
 
     private enum Outbound {
-        case bytes(Data)
+        case response(Data)
+        case event(Data)
         case output(sessionID: ULID, seq: UInt64, bytes: Data)
 
         func encoded() -> Data? {
             switch self {
-            case .bytes(let data): return data
+            case .response(let data), .event(let data): return data
             case .output(let sessionID, let seq, let bytes):
                 guard let params = try? JSONValue(encoding: SessionOutputTopicPayload(
                     sessionID: sessionID, seq: seq, dataB64: bytes.base64EncodedString()))
@@ -197,8 +203,15 @@ final class ClientConnection {
 
         var byteCount: Int {
             switch self {
-            case .bytes(let data): return data.count
+            case .response(let data), .event(let data): return data.count
             case .output(_, _, let bytes): return bytes.count
+            }
+        }
+
+        var isEvent: Bool {
+            switch self {
+            case .event, .output: return true
+            case .response: return false
             }
         }
     }
@@ -251,8 +264,8 @@ final class ClientConnection {
         }
         enqueueLocked(outbound)
         let overflow = (
-            outbox.count > ClientConnection.maxQueuedEvents ||
-            queuedBytes > ClientConnection.maxQueuedBytes
+            queuedEventCount > ClientConnection.maxQueuedEvents ||
+            queuedEventBytes > ClientConnection.maxQueuedBytes
         ) && !backpressureDisconnectScheduled
         if overflow {
             backpressureDisconnectScheduled = true
@@ -265,8 +278,9 @@ final class ClientConnection {
             if let params = try? JSONValue(encoding: warning),
                let data = try? SocketFraming.encodeLine(Envelope.event(
                 EventMessage(topic: .engineWarning, params: params))) {
-                outbox.insert(.bytes(data), at: 0)
-                queuedBytes += data.count
+                outbox.insert(.event(data), at: 0)
+                queuedEventCount += 1
+                queuedEventBytes += data.count
                 backpressureWarningEnqueued = true
             }
         }
@@ -289,18 +303,26 @@ final class ClientConnection {
     }
 
     private func makeOutbound(_ envelope: Envelope) -> Outbound? {
-        if case .event(let event) = envelope,
-           event.knownTopic == .sessionOutput,
-           let payload = try? event.decodeParams(SessionOutputTopicPayload.self),
-           let bytes = Data(base64Encoded: payload.dataB64) {
-            return .output(sessionID: payload.sessionID, seq: payload.seq, bytes: bytes)
+        switch envelope {
+        case .event(let event):
+            if event.knownTopic == .sessionOutput,
+               let payload = try? event.decodeParams(SessionOutputTopicPayload.self),
+               let bytes = Data(base64Encoded: payload.dataB64) {
+                return .output(sessionID: payload.sessionID, seq: payload.seq, bytes: bytes)
+            }
+            guard let data = try? SocketFraming.encodeLine(envelope) else { return nil }
+            return .event(data)
+        case .response:
+            guard let data = try? SocketFraming.encodeLine(envelope) else { return nil }
+            return .response(data)
+        case .request:
+            guard let data = try? SocketFraming.encodeLine(envelope) else { return nil }
+            return .response(data)
         }
-        guard let data = try? SocketFraming.encodeLine(envelope) else { return nil }
-        return .bytes(data)
     }
 
     private func enqueueLocked(_ new: Outbound) {
-        if outbox.count >= ClientConnection.coalesceAfter,
+        if queuedEventCount >= ClientConnection.coalesceAfter,
            case .output(let newSession, let newSeq, let newBytes) = new,
            case .output(let oldSession, _, let oldBytes)? = outbox.last,
            oldSession == newSession {
@@ -308,10 +330,13 @@ final class ClientConnection {
             // reatacha de `seq + 1`, e o terminal já recebeu todos os bytes unidos.
             outbox[outbox.count - 1] = .output(
                 sessionID: newSession, seq: newSeq, bytes: oldBytes + newBytes)
-            queuedBytes += newBytes.count
+            queuedEventBytes += newBytes.count
         } else {
             outbox.append(new)
-            queuedBytes += new.byteCount
+            if new.isEvent {
+                queuedEventCount += 1
+                queuedEventBytes += new.byteCount
+            }
         }
     }
 
@@ -327,7 +352,10 @@ final class ClientConnection {
             writeLock.lock()
             let closed = writeClosed
             let next = outbox.isEmpty ? nil : outbox.removeFirst()
-            if let next { queuedBytes -= next.byteCount }
+            if let next, next.isEvent {
+                queuedEventCount -= 1
+                queuedEventBytes -= next.byteCount
+            }
             if next == nil { drainScheduled = false }
             writeLock.unlock()
             guard !closed, let next, let data = next.encoded() else { return }
@@ -346,12 +374,17 @@ final class ClientConnection {
     /// Visibilidade determinística para testes de limites, sem expor o buffer ao engine.
     var queuedEventCountForTesting: Int {
         writeLock.lock(); defer { writeLock.unlock() }
-        return outbox.count
+        return queuedEventCount
     }
 
     var queuedByteCountForTesting: Int {
         writeLock.lock(); defer { writeLock.unlock() }
-        return queuedBytes
+        return queuedEventBytes
+    }
+
+    var queuedTotalByteCountForTesting: Int {
+        writeLock.lock(); defer { writeLock.unlock() }
+        return outbox.reduce(into: 0) { $0 += $1.byteCount }
     }
 
     var backpressureScheduledForTesting: Bool {

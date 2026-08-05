@@ -54,7 +54,7 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .colmeiaShowAttention)) { _ in
             surface = .canvas
-            store.canvasViewMode = .atencao
+            openNowPanel()
         }
         .onReceive(NotificationCenter.default.publisher(for: .colmeiaShowNow)) { _ in
             openNowPanel()
@@ -265,15 +265,14 @@ struct ContentView: View {
             .foregroundStyle(workingWorkers.isEmpty ? Color.secondary : Color.green)
 
             Button {
-                surface = .canvas
-                store.canvasViewMode = .atencao
+                openNowPanel()
             } label: {
-                Label("\(attentionCount) attention", systemImage: "exclamationmark.triangle.fill")
+                Label("\(attentionCount) pendências", systemImage: "bell.badge.fill")
                     .font(.caption)
                     .foregroundStyle(attentionCount == 0 ? Color.secondary : Color.orange)
             }
             .buttonStyle(.plain)
-            .help("Show agents waiting for approval, human input, or review")
+            .help("Abrir o painel Agora com aprovações, revisão e pedidos de intervenção")
 
             Button(action: openNowPanel) {
                 Label("Now", systemImage: "rectangle.and.text.magnifyingglass")

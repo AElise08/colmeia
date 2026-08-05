@@ -60,14 +60,22 @@ final class AppStore: ObservableObject {
     @Published private(set) var memoryProposals: [MemoryProposal] = []
     @Published private(set) var memoryHistory: [MemoryHistoryEntry] = []
     @Published private(set) var deliveries: [Delivery] = []
+    @Published private(set) var deployRequests: [DeployRequest] = []
     @Published private(set) var watchdogConfiguration = WorkerWatchdogConfiguration()
     @Published private(set) var watchdogAlerts: [WatchdogAlertTopicPayload] = []
     @Published private(set) var workerArchives: [WorkerArchiveTombstone] = []
     @Published private(set) var agentMessages: [AgentMessageSummary] = []
+    @Published private(set) var telemetrySnapshot: TelemetrySnapshot?
+    @Published private(set) var connectionActivities: [ULID: ConnectionActivityEvent] = [:]
+    @Published private(set) var fileActivities: [FileActivityEvent] = []
+    @Published private(set) var portalActivities: [PortalActivityEvent] = []
     @Published private(set) var workspaceHealth: WorkspaceHealth?
     @Published var viewport = Viewport()
     @Published var selection: ULID?
     @Published var connectionSelection: ULID?
+    /// Origem da conexão iniciada pela UI. O modo explícito por seleção/clique
+    /// complementa a alça de arrasto e continua funcionando em zoom baixo.
+    @Published var connectionSourceID: ULID?
     @Published var conexaoPendente: ConexaoPendente?
     @Published var lastError: String?
     @Published var avisoInfo: String?
@@ -391,6 +399,7 @@ final class AppStore: ObservableObject {
             documentRequestTail = nil
             selection = nil
             connectionSelection = nil
+            connectionSourceID = nil
             conexaoPendente = nil
             draggingNodeID = nil
             dragBase = nil
@@ -406,6 +415,11 @@ final class AppStore: ObservableObject {
             watchdogAlerts = []
             workerArchives = []
             agentMessages = []
+            telemetrySnapshot = nil
+            connectionActivities = [:]
+            fileActivities = []
+            portalActivities = []
+            deployRequests = []
             missions = []
             workstreams = []
             semanticObjectPositions = [:]
@@ -424,7 +438,11 @@ final class AppStore: ObservableObject {
 
             _ = try? await connection.call(
                 .subscribe,
-                params: SubscribeParams(topics: ColmeiaTopic.allCases, workspaceID: workspaceID)
+                params: SubscribeParams(
+                    topics: connection.engineVersion == ColmeiaVersion.string
+                        ? ColmeiaTopic.allCases
+                        : ColmeiaTopic.legacyCompatibleCases,
+                    workspaceID: workspaceID)
             )
             await reattachSessions()
             await refreshApprovals()
@@ -433,6 +451,7 @@ final class AppStore: ObservableObject {
             await refreshFloors()
             await refreshOperationalState()
             await refreshAgentMessages()
+            await refreshTelemetry()
         } catch {
             report(error, "workspace.open")
         }
@@ -459,6 +478,7 @@ final class AppStore: ObservableObject {
             semanticLayoutWorkspaceID = nil
             canvasFiltroMissao = nil
             selection = nil
+            connectionSourceID = nil
             avisoInfo = "Workspace fechado; sessões permanecem disponíveis para retomar."
         } catch {
             report(error, "workspace.close")
@@ -480,6 +500,33 @@ final class AppStore: ObservableObject {
             workspace = result.workspace
         } catch {
             report(error, "workspace.primary")
+        }
+    }
+
+    /// Torna um terminal a Rainha do workspace. A estrela antiga só definia o
+    /// agente primário; a permissão da Rainha exige explicitamente papel=rainha
+    /// no nó, que é o que o Engine valida para node.connect/node.dismiss.
+    func promoteToQueen(_ nodeID: ULID) async {
+        guard case .terminal = nodes[nodeID] else { return }
+        do {
+            let demotions = nodes.values.compactMap { node -> OpPayload? in
+                guard case .terminal(let terminal) = node,
+                      terminal.id != nodeID,
+                      terminal.papel?.lowercased() == "rainha" else { return nil }
+                return .nodeUpdate(NodeUpdateOpPayload(
+                    id: terminal.id,
+                    campos: .object(["papel": .string("regular")])
+                ))
+            }
+            let promotion: OpPayload = .nodeUpdate(NodeUpdateOpPayload(
+                id: nodeID,
+                campos: .object(["papel": .string("rainha")])
+            ))
+            try await performManyAguardando(demotions + [promotion], undoable: false)
+            await setPrimaryAgent(nodeID)
+            avisoInfo = "\(nodeName(nodeID)) agora é a Rainha: pode coordenar conexões e dispensar agentes."
+        } catch {
+            report(error, "agent.queen.promote")
         }
     }
 
@@ -529,6 +576,23 @@ final class AppStore: ObservableObject {
             params: DelegationListParams(workspaceID: ws.id),
             expecting: [Delegation].self
         )) ?? []
+    }
+
+    func refreshTelemetry() async {
+        guard let ws = workspace else {
+            telemetrySnapshot = nil
+            return
+        }
+        do {
+            telemetrySnapshot = try await connection.call(
+                .telemetrySnapshot,
+                params: TelemetrySnapshotParams(workspaceID: ws.id),
+                expecting: TelemetrySnapshot.self)
+        } catch {
+            // Engines antigos continuam funcionais; telemetria ausente não
+            // bloqueia o canvas nem transforma ausência em zero.
+            telemetrySnapshot = nil
+        }
     }
 
     func refreshRoutines() async {
@@ -1525,6 +1589,36 @@ final class AppStore: ObservableObject {
 
     // MARK: - Conexões pela UI (§5.3)
 
+    func beginConnection(from nodeID: ULID) {
+        guard nodes[nodeID] != nil else { return }
+        connectionSourceID = nodeID
+        selection = nodeID
+        connectionSelection = nil
+        avisoInfo = "Conexão iniciada em \(nodeName(nodeID)). Clique em outro nó para concluir."
+    }
+
+    func toggleConnectionModeFromSelection() {
+        if connectionSourceID != nil {
+            connectionSourceID = nil
+            avisoInfo = "Modo de conexão cancelado."
+        } else if let selection {
+            beginConnection(from: selection)
+        } else {
+            avisoInfo = "Selecione um terminal, nota ou portal antes de conectar."
+        }
+    }
+
+    func finishConnection(to nodeID: ULID) {
+        guard let source = connectionSourceID else { return }
+        guard source != nodeID else {
+            avisoInfo = "Escolha outro nó para criar a conexão."
+            return
+        }
+        connectionSourceID = nil
+        selection = nodeID
+        connect(from: source, to: nodeID)
+    }
+
     func connect(from origem: ULID, to destino: ULID) {
         guard origem != destino, let a = nodes[origem], let b = nodes[destino] else { return }
         let semantica: ConnectionSemantica
@@ -2346,6 +2440,53 @@ final class AppStore: ObservableObject {
                 notifications.notifyEntrega(
                     resumo: payload.delivery.resumo,
                     destination: notificationDestination(nodeID: node(bySession: payload.delivery.sessionID)))
+            }
+        case .telemetrySample, .telemetryActivity:
+            guard let payload = try? event.decodeParams(TelemetrySampleTopicPayload.self),
+                  payload.sample.workspaceID == workspace?.id else { return }
+            Task { await refreshTelemetry() }
+        case .telemetryAggregateChanged:
+            guard let payload = try? event.decodeParams(TelemetryAggregateChangedTopicPayload.self),
+                  payload.workspaceID == workspace?.id else { return }
+            telemetrySnapshot = payload.snapshot
+        case .telemetryBudgetAlert:
+            guard let payload = try? event.decodeParams(TelemetryBudgetAlertTopicPayload.self),
+                  payload.workspaceID == workspace?.id else { return }
+            Task { await refreshTelemetry() }
+            avisoInfo = "Orçamento de telemetria atingiu \(Int(payload.percent * 100))%."
+        case .connectionActivity:
+            guard let payload = try? event.decodeParams(ConnectionActivityTopicPayload.self),
+                  payload.event.workspaceID == workspace?.id else { return }
+            connectionActivities[payload.event.connectionID] = payload.event
+            let connectionID = payload.event.connectionID
+            let eventID = payload.event.id
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_600_000_000)
+                guard let self,
+                      self.connectionActivities[connectionID]?.id == eventID else { return }
+                self.connectionActivities.removeValue(forKey: connectionID)
+            }
+            if connectionActivities.count > 200,
+               let oldest = connectionActivities.min(by: { $0.value.startedAt < $1.value.startedAt }) {
+                connectionActivities.removeValue(forKey: oldest.key)
+            }
+        case .fileActivity:
+            guard let payload = try? event.decodeParams(FileActivityTopicPayload.self),
+                  payload.event.workspaceID == workspace?.id else { return }
+            fileActivities.append(payload.event)
+            if fileActivities.count > 500 { fileActivities.removeFirst(fileActivities.count - 500) }
+        case .portalActivity:
+            guard let payload = try? event.decodeParams(PortalActivityTopicPayload.self),
+                  payload.event.workspaceID == workspace?.id else { return }
+            portalActivities.append(payload.event)
+            if portalActivities.count > 500 { portalActivities.removeFirst(portalActivities.count - 500) }
+        case .deployStateChanged:
+            guard let payload = try? event.decodeParams(DeployStateChangedTopicPayload.self),
+                  payload.request.workspaceID == workspace?.id else { return }
+            if let index = deployRequests.firstIndex(where: { $0.id == payload.request.id }) {
+                deployRequests[index] = payload.request
+            } else {
+                deployRequests.append(payload.request)
             }
         case .watchdogAlert:
             guard let payload = try? event.decodeParams(WatchdogAlertTopicPayload.self),

@@ -144,10 +144,6 @@ struct ColmeiaCanvasApp: App {
                     NotificationCenter.default.post(name: .colmeiaShowAgentChat, object: nil)
                 }
                 .keyboardShortcut("2", modifiers: .command)
-                Button("Atenção") {
-                    NotificationCenter.default.post(name: .colmeiaShowAttention, object: nil)
-                }
-                .keyboardShortcut("a", modifiers: [.command, .option])
                 Button("Agora") {
                     NotificationCenter.default.post(name: .colmeiaShowNow, object: nil)
                 }

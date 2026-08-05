@@ -50,6 +50,7 @@ let package = Package(
         .target(
             name: "ColmeiaHub",
             dependencies: ["ColmeiaKit"],
+            resources: [.process("Resources")],
             swiftSettings: swiftSettings
         ),
         // Binário fino do daemon.

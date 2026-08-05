@@ -100,6 +100,10 @@ public final class Engine: @unchecked Sendable {
     var delegations: [ULID: [ULID: Delegation]] = [:]
     var delegationWaiters: [ULID: [(Delegation) -> Void]] = [:]
     var semanticEvents: [ULID: [SemanticEvent]] = [:]
+    var telemetryStores: [ULID: TelemetryStore] = [:]
+    var telemetryBudgets: [ULID: TelemetryBudget] = [:]
+    var deployStores: [ULID: DeployStore] = [:]
+    var telemetryPricing = TelemetryPricingTable()
     var watchdogAlertedSessions: Set<ULID> = []
     let watchdog = WorkerWatchdogService()
     var portalBrowsers: [ULID: PortalBrowserSession] = [:]
@@ -137,6 +141,8 @@ public final class Engine: @unchecked Sendable {
         lockFD = fd
         let loadedConfig = EngineConfig.load(from: paths)
         config = loadedConfig.config
+        telemetryPricing = (try? AtomicJSON.read(
+            TelemetryPricingTable.self, from: paths.telemetryPricingFile)) ?? TelemetryPricingTable()
         if let warning = loadedConfig.warning {
             log.warn("config_warning", warning)
         }
@@ -288,6 +294,10 @@ public final class Engine: @unchecked Sendable {
             let savedDelegations = (try? AtomicJSON.read([Delegation].self, from: paths.delegationsFile(wsID))) ?? []
             delegations[wsID] = Dictionary(uniqueKeysWithValues: savedDelegations.map { ($0.id, $0) })
             semanticEvents[wsID] = Self.readSemanticEvents(from: paths.semanticEventsFile(wsID))
+            telemetryStores[wsID] = try? TelemetryStore(fileURL: paths.telemetryFile(wsID))
+            telemetryBudgets[wsID] = try? AtomicJSON.read(
+                TelemetryBudget.self, from: paths.telemetryBudgetFile(wsID))
+            deployStores[wsID] = try? DeployStore(fileURL: paths.deployFile(wsID))
             if let notice = state.corruptionNotice {
                 log.warn("document_corrupted", notice, workspaceID: wsID)
             }
@@ -981,6 +991,84 @@ public final class Engine: @unchecked Sendable {
                 respondEncodable(client, id: request.id, list)
             case .adapterList:
                 respondEncodable(client, id: request.id, registry.availability())
+            case .telemetrySnapshot:
+                let params = try request.decodeParams(TelemetrySnapshotParams.self)
+                _ = try requireWorkspace(params.workspaceID)
+                respondEncodable(client, id: request.id, telemetrySnapshot(
+                    workspaceID: params.workspaceID, windowStart: params.windowStart))
+            case .telemetryQuery:
+                let params = try request.decodeParams(TelemetryQueryParams.self)
+                _ = try requireWorkspace(params.workspaceID)
+                let store = try telemetryStore(params.workspaceID)
+                respondEncodable(client, id: request.id, TelemetryQueryResult(samples: store.usage(
+                    workspaceID: params.workspaceID, nodeID: params.nodeID,
+                    sessionID: params.sessionID, from: params.from,
+                    until: params.until, limit: params.limit)))
+            case .telemetryBudgetGet:
+                let params = try request.decodeParams(TelemetrySnapshotParams.self)
+                _ = try requireWorkspace(params.workspaceID)
+                respondEncodable(client, id: request.id, TelemetryBudgetResult(
+                    budget: telemetryBudget(params.workspaceID)))
+            case .telemetryBudgetUpdate:
+                let params = try request.decodeParams(TelemetryBudgetUpdateParams.self)
+                _ = try authorizeWorkspace(params.workspaceID, author: client.author)
+                guard params.limit == nil || (params.limit ?? 0) >= 0 else {
+                    throw ProtocolError(name: .invalid_params, message: "limite de custo não pode ser negativo")
+                }
+                let budget = TelemetryBudget(
+                    workspaceID: params.workspaceID, limit: params.limit,
+                    currency: params.currency, warningThresholds: params.warningThresholds)
+                telemetryBudgets[params.workspaceID] = budget
+                try? AtomicJSON.write(budget, to: paths.telemetryBudgetFile(params.workspaceID))
+                let snapshot = telemetrySnapshot(workspaceID: params.workspaceID)
+                broadcast(.telemetryAggregateChanged, ws: params.workspaceID,
+                    TelemetryAggregateChangedTopicPayload(
+                        workspaceID: params.workspaceID, snapshot: snapshot))
+                respondEncodable(client, id: request.id, TelemetryBudgetResult(budget: budget))
+            case .telemetryPricingGet:
+                respondEncodable(client, id: request.id, TelemetryPricingResult(table: telemetryPricing))
+            case .fileActivityRecord:
+                let params = try request.decodeParams(FileActivityRecordParams.self)
+                respondEncodable(client, id: request.id,
+                    FileActivityRecordResult(event: try recordFileActivity(params, author: client.author)))
+            case .fileActivityScan:
+                let params = try request.decodeParams(FileActivityScanParams.self)
+                respondEncodable(client, id: request.id,
+                    try scanGitFileActivity(params, author: client.author))
+            case .fileActivityQuery:
+                let params = try request.decodeParams(TelemetryQueryParams.self)
+                _ = try requireWorkspace(params.workspaceID)
+                let store = try telemetryStore(params.workspaceID)
+                respondEncodable(client, id: request.id, FileActivityQueryResult(events: store.fileActivity(
+                    workspaceID: params.workspaceID, nodeID: params.nodeID,
+                    from: params.from, until: params.until, limit: params.limit)))
+            case .portalActivityQuery:
+                let params = try request.decodeParams(TelemetryQueryParams.self)
+                _ = try requireWorkspace(params.workspaceID)
+                let store = try telemetryStore(params.workspaceID)
+                respondEncodable(client, id: request.id, PortalActivityQueryResult(events: store.portalActivity(
+                    workspaceID: params.workspaceID, nodeID: params.nodeID,
+                    from: params.from, until: params.until, limit: params.limit)))
+            case .deployTargetRegister:
+                let params = try request.decodeParams(DeployTargetRegisterParams.self)
+                respondEncodable(client, id: request.id,
+                    DeployTargetResult(target: try handleDeployTargetRegister(params, author: client.author)))
+            case .deployTargetList:
+                let params = try request.decodeParams(DeployTargetListParams.self)
+                _ = try authorizeWorkspace(params.workspaceID, author: client.author)
+                respondEncodable(client, id: request.id, try deployStore(params.workspaceID).targets(workspaceID: params.workspaceID))
+            case .deployRequest:
+                let params = try request.decodeParams(DeployRequestParams.self)
+                respondEncodable(client, id: request.id,
+                    DeployRequestResult(request: try handleDeployRequest(params, author: client.author)))
+            case .deployConfirm:
+                let params = try request.decodeParams(DeployConfirmParams.self)
+                respondEncodable(client, id: request.id,
+                    DeployRequestResult(request: try handleDeployConfirm(params, author: client.author)))
+            case .deployList:
+                let params = try request.decodeParams(DeployTargetListParams.self)
+                _ = try authorizeWorkspace(params.workspaceID, author: client.author)
+                respondEncodable(client, id: request.id, try deployStore(params.workspaceID).requests(workspaceID: params.workspaceID))
             case .subscribe:
                 let params = try request.decodeParams(SubscribeParams.self)
                 for topic in params.topics {
@@ -1676,6 +1764,9 @@ public final class Engine: @unchecked Sendable {
         workspaces[workspace.id] = state
         deliveryStores[workspace.id] = try DeliveryStore(directory: paths.deliveriesDir(workspace.id))
         chatMessageStores[workspace.id] = try ChatMessageStore(fileURL: paths.chatMessagesFile(workspace.id))
+        telemetryStores[workspace.id] = try TelemetryStore(fileURL: paths.telemetryFile(workspace.id))
+        telemetryBudgets[workspace.id] = TelemetryBudget(workspaceID: workspace.id)
+        deployStores[workspace.id] = try DeployStore(fileURL: paths.deployFile(workspace.id))
         watchdogConfigurations[workspace.id] = WorkerWatchdogConfiguration()
         workerArchives[workspace.id] = WorkerArchiveService()
         return WorkspaceResult(workspace: workspace)
@@ -1694,6 +1785,9 @@ public final class Engine: @unchecked Sendable {
         openWorkspaces.remove(params.id)
         deliveryStores.removeValue(forKey: params.id)
         chatMessageStores.removeValue(forKey: params.id)
+        telemetryStores.removeValue(forKey: params.id)
+        telemetryBudgets.removeValue(forKey: params.id)
+        deployStores.removeValue(forKey: params.id)
         watchdogConfigurations.removeValue(forKey: params.id)
         workerArchives.removeValue(forKey: params.id)
         for (id, routine) in routines where routine.workspaceID == params.id {
@@ -1730,6 +1824,90 @@ public final class Engine: @unchecked Sendable {
         let store = try ChatMessageStore(fileURL: paths.chatMessagesFile(workspaceID))
         chatMessageStores[workspaceID] = store
         return store
+    }
+
+    private func telemetryStore(_ workspaceID: ULID) throws -> TelemetryStore {
+        if let store = telemetryStores[workspaceID] { return store }
+        let store = try TelemetryStore(fileURL: paths.telemetryFile(workspaceID))
+        telemetryStores[workspaceID] = store
+        return store
+    }
+
+    private func deployStore(_ workspaceID: ULID) throws -> DeployStore {
+        if let store = deployStores[workspaceID] { return store }
+        let store = try DeployStore(fileURL: paths.deployFile(workspaceID))
+        deployStores[workspaceID] = store
+        return store
+    }
+
+    private func telemetryBudget(_ workspaceID: ULID) -> TelemetryBudget {
+        telemetryBudgets[workspaceID] ?? TelemetryBudget(workspaceID: workspaceID)
+    }
+
+    private func telemetrySnapshot(workspaceID: ULID, windowStart: Date? = nil) -> TelemetrySnapshot {
+        let names = workspaces[workspaceID]?.nodes.reduce(into: [ULID: String]()) { result, item in
+            if case .terminal(let terminal) = item.value {
+                result[item.key] = terminal.nome
+            }
+        } ?? [:]
+        let store = (try? telemetryStore(workspaceID)) ?? (try? TelemetryStore(fileURL: paths.telemetryFile(workspaceID)))
+        return store?.snapshot(
+            workspaceID: workspaceID, windowStart: windowStart,
+            pricing: telemetryPricing, budget: telemetryBudgets[workspaceID],
+            agentNames: names) ?? TelemetrySnapshot(workspaceID: workspaceID, generatedAt: Date())
+    }
+
+    /// API interna para adapters que possuam hook oficial de uso.
+    /// A ausência de hook não é convertida em número estimado.
+    public func recordUsageSample(_ sample: UsageSample) {
+        stateQueue.async {
+            guard self.workspaces[sample.workspaceID] != nil,
+                  let store = try? self.telemetryStore(sample.workspaceID),
+                  (try? store.append(sample)) == true else { return }
+            self.broadcast(.telemetrySample, ws: sample.workspaceID,
+                TelemetrySampleTopicPayload(sample: sample))
+            self.broadcast(.telemetryActivity, ws: sample.workspaceID,
+                TelemetrySampleTopicPayload(sample: sample))
+            self.broadcast(.telemetryAggregateChanged, ws: sample.workspaceID,
+                TelemetryAggregateChangedTopicPayload(
+                    workspaceID: sample.workspaceID,
+                    snapshot: self.telemetrySnapshot(workspaceID: sample.workspaceID)))
+        }
+    }
+
+    private func recordUnavailableUsage(_ session: LiveSession) {
+        let dto = session.dto()
+        guard let store = try? telemetryStore(dto.workspaceID) else { return }
+        if let workspace = workspaces[dto.workspaceID]?.workspace,
+           let adapter = registry.find(dto.adapter),
+           let sample = try? adapter.collectUsage(
+               AdapterTelemetryContext(session: dto, workspace: workspace, recordedAt: Date())),
+           sample.workspaceID == dto.workspaceID,
+           sample.sessionID == dto.id,
+           sample.nodeID == dto.nodeID {
+            guard (try? store.append(sample)) == true else { return }
+            broadcast(.telemetrySample, ws: dto.workspaceID,
+                TelemetrySampleTopicPayload(sample: sample))
+            broadcast(.telemetryActivity, ws: dto.workspaceID,
+                TelemetrySampleTopicPayload(sample: sample))
+            broadcast(.telemetryAggregateChanged, ws: dto.workspaceID,
+                TelemetryAggregateChangedTopicPayload(
+                    workspaceID: dto.workspaceID,
+                    snapshot: telemetrySnapshot(workspaceID: dto.workspaceID)))
+            return
+        }
+        let sample = UsageSample(
+            id: dto.id, workspaceID: dto.workspaceID, sessionID: dto.id, nodeID: dto.nodeID,
+            adapter: dto.adapter, provider: dto.adapter, model: nil,
+            source: .unavailable, startedAt: dto.iniciadaEm, endedAt: dto.encerradaEm)
+        guard (try? store.append(sample)) == true else { return }
+        broadcast(.telemetrySample, ws: dto.workspaceID,
+            TelemetrySampleTopicPayload(sample: sample))
+        broadcast(.telemetryActivity, ws: dto.workspaceID,
+            TelemetrySampleTopicPayload(sample: sample))
+        broadcast(.telemetryAggregateChanged, ws: dto.workspaceID,
+            TelemetryAggregateChangedTopicPayload(
+                workspaceID: dto.workspaceID, snapshot: telemetrySnapshot(workspaceID: dto.workspaceID)))
     }
 
     private func handleChatMessageAppend(
@@ -1889,6 +2067,96 @@ public final class Engine: @unchecked Sendable {
             }
         }
         throw ProtocolError(name: .invalid_params, message: "entrega \(deliveryID) não existe")
+    }
+
+    private func handleDeployTargetRegister(
+        _ params: DeployTargetRegisterParams, author: Author
+    ) throws -> DeployTarget {
+        _ = try authorizeWorkspace(params.target.workspaceID, author: author)
+        guard case .humano = author else {
+            throw ProtocolError(name: .insufficient_permissions, message: "cadastrar destino exige identidade humana")
+        }
+        guard !params.target.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !params.target.environment.isEmpty, !params.target.resource.isEmpty,
+              !params.target.subjectID.isEmpty else {
+            throw ProtocolError(name: .invalid_params, message: "deploy target incompleto")
+        }
+        _ = try roomStore(params.target.roomID)
+        guard let store = try? deployStore(params.target.workspaceID) else {
+            throw ProtocolError(name: .internal_error, message: "não abriu o armazenamento de deploy")
+        }
+        return try store.register(params.target)
+    }
+
+    private func handleDeployRequest(
+        _ params: DeployRequestParams, author: Author
+    ) throws -> DeployRequest {
+        _ = try authorizeWorkspace(params.workspaceID, author: author)
+        guard let delivery = try deliveryStore(params.workspaceID).delivery(id: params.deliveryID),
+              delivery.workspaceID == params.workspaceID else {
+            throw ProtocolError(name: .invalid_params, message: "entrega não encontrada neste workspace")
+        }
+        guard delivery.aceita else {
+            throw ProtocolError(name: .invalid_params, message: "deploy exige entrega aceita por humano")
+        }
+        let store = try deployStore(params.workspaceID)
+        guard let target = store.target(id: params.targetID), target.allowed,
+              target.workspaceID == params.workspaceID else {
+            throw ProtocolError(name: .invalid_params, message: "destino de deploy indisponível")
+        }
+        let request = DeployRequest(
+            workspaceID: params.workspaceID, deliveryID: params.deliveryID,
+            targetID: params.targetID, requestedBy: author,
+            state: .awaitingConfirmation,
+            audit: ["request por \(author.rawValue) para ambiente \(target.environment)"])
+        let saved = try store.add(request)
+        broadcast(.deployStateChanged, ws: params.workspaceID,
+            DeployStateChangedTopicPayload(request: saved))
+        return saved
+    }
+
+    private func handleDeployConfirm(
+        _ params: DeployConfirmParams, author: Author
+    ) throws -> DeployRequest {
+        guard case .humano = author else {
+            throw ProtocolError(name: .insufficient_permissions, message: "deploy.confirm exige confirmação humana")
+        }
+        guard let pair = deployStores.first(where: { $0.value.request(id: params.requestID) != nil }) else {
+            throw ProtocolError(name: .invalid_params, message: "deploy request não encontrada")
+        }
+        let workspaceID = pair.key
+        _ = try authorizeWorkspace(workspaceID, author: author)
+        let store = pair.value
+        guard var request = store.request(id: params.requestID),
+              let target = store.target(id: request.targetID) else {
+            throw ProtocolError(name: .invalid_params, message: "deploy request inválida")
+        }
+        guard request.state == .awaitingConfirmation || request.state == .approved else {
+            throw ProtocolError(name: .invalid_params, message: "deploy request não aguarda confirmação")
+        }
+        guard let delivery = try deliveryStore(workspaceID).delivery(id: request.deliveryID), delivery.aceita else {
+            throw ProtocolError(name: .invalid_params, message: "a entrega deixou de estar aceita")
+        }
+        guard let room = try? roomStore(target.roomID) else {
+            throw ProtocolError(name: .room_not_found, message: "sala do destino não existe")
+        }
+        let grants = room.getGrants(subjectID: target.subjectID, activeOnly: true)
+        let grant = grants.first {
+            (params.capabilityGrantID == nil || $0.id == params.capabilityGrantID)
+                && $0.resource == target.resource && $0.actions.contains(.execute)
+        }
+        guard let grant else {
+            throw ProtocolError(name: .insufficient_permissions, message: "CapabilityGrant execute incompatível com o destino")
+        }
+        request.state = .approved
+        request.confirmedBy = author
+        request.capabilityGrantID = grant.id
+        request.updatedAt = Date()
+        request.audit.append("confirmação humana por \(author.rawValue); runner autorizado, execução ainda não iniciada")
+        let saved = try store.update(request)
+        broadcast(.deployStateChanged, ws: workspaceID,
+            DeployStateChangedTopicPayload(request: saved))
+        return saved
     }
 
     private func handleWatchdogUpdate(_ params: WatchdogUpdateParams, author: Author) throws {
@@ -2607,6 +2875,11 @@ public final class Engine: @unchecked Sendable {
             sessionID: session.id, estado: novo, motivo: motivo,
             nodeID: session.nodeID, workspaceID: session.workspaceID))
         saveMeta(session.dto())
+        if !novo.isViva {
+            // Sem um hook oficial do provider, a amostra é explicitamente
+            // indisponível; nenhum token é inferido do terminal.
+            recordUnavailableUsage(session)
+        }
         if novo == .esperandoHumano || novo == .ociosa {
             completeBlockingWait(session) // resposta antes da próxima entrega
             deliverQueued(session) // §14.2 entrega adiada
@@ -2898,6 +3171,118 @@ public final class Engine: @unchecked Sendable {
             de: message.deNode, para: dest.nodeID, texto: message.texto, messageID: message.id))
         recordSemanticEvent(SemanticEvent(workspaceID: dest.workspaceID, sessionID: dest.id, nodeID: dest.nodeID, kind: .userMessage, text: message.texto, metadata: ["from_node_id": message.deNode.string, "message_id": message.id.string]))
         ensureConversaConnection(ws: dest.workspaceID, entre: message.deNode, e: dest.nodeID)
+        recordConnectionActivity(
+            workspaceID: dest.workspaceID, from: message.deNode, to: dest.nodeID,
+            activity: .message, volume: max(1, message.texto.utf8.count))
+    }
+
+    private func recordConnectionActivity(
+        workspaceID: ULID, from: ULID, to: ULID,
+        activity: ConnectionActivityKind, volume: Int = 1
+    ) {
+        guard let state = workspaces[workspaceID],
+              let connection = state.connections.values.first(where: {
+                  ($0.de == from && $0.para == to) || ($0.de == to && $0.para == from)
+              }),
+              let store = try? telemetryStore(workspaceID) else { return }
+        let now = Date()
+        let event = ConnectionActivityEvent(
+            workspaceID: workspaceID, connectionID: connection.id,
+            fromNodeID: from, toNodeID: to, activity: activity,
+            volume: volume, startedAt: now, completedAt: now)
+        guard (try? store.append(event)) == true else { return }
+        broadcast(.connectionActivity, ws: workspaceID,
+            ConnectionActivityTopicPayload(event: event))
+    }
+
+    /// Registra somente observações estruturadas vindas de um hook de ferramenta.
+    /// O path é normalizado e sempre permanece relativo; paths fora do workspace
+    /// são rejeitados antes de qualquer persistência ou broadcast.
+    private func recordFileActivity(
+        _ params: FileActivityRecordParams, author: Author
+    ) throws -> FileActivityEvent {
+        let state = try authorizeWorkspace(params.workspaceID, author: author)
+        guard state.nodes[params.nodeID] != nil else {
+            throw ProtocolError(name: .node_not_found, message: "nó \(params.nodeID) não existe")
+        }
+        let raw = params.relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, !raw.hasPrefix("/"), !raw.hasPrefix("~"),
+              !raw.contains("\\"), !raw.split(separator: "/").contains(".."),
+              !raw.contains("\0") else {
+            throw ProtocolError(name: .invalid_params, message: "file activity exige path relativo ao workspace")
+        }
+        guard params.source != .unavailable else {
+            throw ProtocolError(name: .invalid_params, message: "atividade de arquivo exige fonte observável")
+        }
+        let event = FileActivityEvent(
+            workspaceID: params.workspaceID, sessionID: params.sessionID,
+            nodeID: params.nodeID, relativePath: raw, action: params.action,
+            tool: params.tool, source: params.source,
+            startedAt: params.startedAt ?? Date(), endedAt: params.endedAt,
+            success: params.success, metadata: params.metadata)
+        let store = try telemetryStore(params.workspaceID)
+        guard (try store.append(event)) else { return event }
+        broadcast(.fileActivity, ws: params.workspaceID, FileActivityTopicPayload(event: event))
+        broadcast(.telemetryActivity, ws: params.workspaceID, FileActivityTopicPayload(event: event))
+        return event
+    }
+
+    /// Confirma modificações com `git status --porcelain`. A saída é consumida
+    /// somente como fonte local e convertida em paths relativos; nada do Git é
+    /// enviado ao Hub além dos eventos normalizados.
+    private func scanGitFileActivity(
+        _ params: FileActivityScanParams, author: Author
+    ) throws -> FileActivityScanResult {
+        let state = try authorizeWorkspace(params.workspaceID, author: author)
+        guard state.nodes[params.nodeID] != nil else {
+            throw ProtocolError(name: .node_not_found, message: "nó \(params.nodeID) não existe")
+        }
+        guard let root = state.workspace.caminhoRaiz, !root.isEmpty else {
+            throw ProtocolError(name: .invalid_params, message: "workspace não possui caminho Git")
+        }
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git", "-C", root, "status", "--porcelain=v1", "--untracked-files=all"]
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw ProtocolError(name: .invalid_params, message: "não foi possível consultar Git no workspace")
+        }
+        guard process.terminationStatus == 0 else {
+            throw ProtocolError(name: .invalid_params, message: "workspace não é um repositório Git válido")
+        }
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        var events: [FileActivityEvent] = []
+        let now = Date()
+        for line in output.split(whereSeparator: \.isNewline) {
+            let text = String(line)
+            guard text.utf8.count > 3 else { continue }
+            let status = String(text.prefix(2))
+            var path = String(text.dropFirst(3))
+            if let arrow = path.range(of: " -> ") { path = String(path[arrow.upperBound...]) }
+            path = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty, !path.hasPrefix("/"), !path.hasPrefix("~"),
+                  !path.contains("\\"), !path.split(separator: "/").contains("..") else { continue }
+            let action: FileActivityAction
+            if status.contains("?") || status.contains("A") { action = .create }
+            else if status.contains("D") { action = .delete }
+            else if status.contains("M") || status.contains("R") || status.contains("C") { action = .modify }
+            else { action = .reference }
+            let event = FileActivityEvent(
+                workspaceID: params.workspaceID, sessionID: params.sessionID,
+                nodeID: params.nodeID, relativePath: path, action: action,
+                tool: "git", source: .derived, startedAt: now, endedAt: now,
+                success: true, metadata: ["git_status": status])
+            if (try? telemetryStore(params.workspaceID).append(event)) == true {
+                events.append(event)
+                broadcast(.fileActivity, ws: params.workspaceID, FileActivityTopicPayload(event: event))
+            }
+        }
+        return FileActivityScanResult(events: events)
     }
 
     private func sendAutomatedCommand(_ text: String, to session: LiveSession, author: Author) {
@@ -3627,7 +4012,10 @@ public final class Engine: @unchecked Sendable {
             throw ProtocolError(name: .internal_error, message: "falha ao criar sessão de browser")
         }
 
-        switch params.acao {
+        let startedAt = Date()
+        do {
+            let result: PortalCommandResult
+            switch params.acao {
         case .navigate:
             guard let url = params.url, !url.isEmpty else {
                 throw ProtocolError(name: .invalid_params, message: "portal.command navigate exige url")
@@ -3639,20 +4027,20 @@ public final class Engine: @unchecked Sendable {
             else {
                 throw ProtocolError(name: .invalid_params, message: "navigate exige URL http/https absoluta")
             }
-            return try launchChrome(url: url, browser: browser, nodeID: params.nodeID)
+            result = try launchChrome(url: url, browser: browser, nodeID: params.nodeID)
 
         case .shot:
             let selector = params.selector
-            return try chromeShot(browser: browser, selector: selector, nodeID: params.nodeID)
+            result = try chromeShot(browser: browser, selector: selector, nodeID: params.nodeID)
 
         case .snapshot:
-            return try chromeSnapshot(browser: browser, nodeID: params.nodeID)
+            result = try chromeSnapshot(browser: browser, nodeID: params.nodeID)
 
         case .click:
             guard let selector = params.selector, !selector.isEmpty else {
                 throw ProtocolError(name: .invalid_params, message: "portal.command click exige selector")
             }
-            return try chromeEval(browser: browser, code: "document.querySelector('\(selector.replacingOccurrences(of: "'", with: "\\'"))').click()", nodeID: params.nodeID)
+            result = try chromeEval(browser: browser, code: "document.querySelector('\(selector.replacingOccurrences(of: "'", with: "\\'"))').click()", nodeID: params.nodeID)
 
         case .fill:
             guard let selector = params.selector, !selector.isEmpty,
@@ -3671,7 +4059,7 @@ public final class Engine: @unchecked Sendable {
               return 'ok';
             })()
             """
-            return try chromeEval(browser: browser, code: js, nodeID: params.nodeID)
+            result = try chromeEval(browser: browser, code: js, nodeID: params.nodeID)
 
         case .key:
             guard let keys = params.keys, !keys.isEmpty else {
@@ -3689,14 +4077,54 @@ public final class Engine: @unchecked Sendable {
             document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'\(escapedKey)'}));
             document.activeElement.dispatchEvent(new KeyboardEvent('keyup', {key:'\(escapedKey)'}));
             """
-            return try chromeEval(browser: browser, code: js, nodeID: params.nodeID)
+            result = try chromeEval(browser: browser, code: js, nodeID: params.nodeID)
 
         case .eval:
             guard let code = params.code, !code.isEmpty else {
                 throw ProtocolError(name: .invalid_params, message: "portal.command eval exige code")
             }
-            return try chromeEval(browser: browser, code: code, nodeID: params.nodeID)
+            result = try chromeEval(browser: browser, code: code, nodeID: params.nodeID)
+            }
+            recordPortalActivity(params, startedAt: startedAt, result: result, error: nil)
+            return result
+        } catch {
+            recordPortalActivity(params, startedAt: startedAt, result: nil, error: error)
+            throw error
         }
+    }
+
+    /// A atividade CDP é registrada depois do comando real. O payload publicado
+    /// nunca carrega caminho absoluto de screenshot nem query string potencialmente
+    /// sensível; a referência completa continua apenas no armazenamento local.
+    private func recordPortalActivity(
+        _ params: PortalCommandParams, startedAt: Date,
+        result: PortalCommandResult?, error: Error?
+    ) {
+        let safeURL: String? = {
+            guard let raw = params.url, let components = URLComponents(string: raw),
+                  let scheme = components.scheme, let host = components.host else { return nil }
+            var value = "\(scheme)://\(host)\(components.path)"
+            if value.hasSuffix("/") && components.path.isEmpty { value.removeLast() }
+            return value
+        }()
+        let reference: String? = {
+            guard let value = result?.resultado, !value.hasPrefix("/") else { return nil }
+            return value
+        }()
+        let event = PortalActivityEvent(
+            workspaceID: params.workspaceID, nodeID: params.nodeID,
+            action: PortalActivityAction(rawValue: params.acao.rawValue) ?? .eval,
+            url: safeURL, selector: params.selector,
+            status: error == nil ? "succeeded" : "failed",
+            durationMs: Int(Date().timeIntervalSince(startedAt) * 1000),
+            screenshotReference: reference)
+        guard let store = try? telemetryStore(params.workspaceID),
+              (try? store.append(event)) == true else { return }
+        // O evento é seguro para a UI remota; referências locais são removidas.
+        var published = event
+        published.screenshotReference = nil
+        broadcast(.portalActivity, ws: params.workspaceID,
+            PortalActivityTopicPayload(event: published))
     }
 
     private func browserCDNSession(_ browser: PortalBrowserSession) -> URL {

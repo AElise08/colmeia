@@ -24,9 +24,12 @@ struct PortalNodeView<Drag: Gesture>: View {
             }
             PortalWebView(webView: controller.webView)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !portalTimelineEvents.isEmpty {
+                portalTimeline
+            }
         }
-        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.15), lineWidth: 1))
+        .background(ColmeiaCanvasTheme.surface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(ColmeiaCanvasTheme.cyan.opacity(0.32), lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .contextMenu {
             Button("Recarregar") { controller.recarregar() }
@@ -66,7 +69,7 @@ struct PortalNodeView<Drag: Gesture>: View {
         HStack(spacing: 4) {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(ColmeiaCanvasTheme.mutedInk)
                 .frame(width: 22, height: 20)
                 .contentShape(Rectangle())
                 .gesture(dragGesture)
@@ -77,7 +80,7 @@ struct PortalNodeView<Drag: Gesture>: View {
             }
             .buttonStyle(.plain)
             .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(controller.podeVoltar ? Color.primary : Color.secondary.opacity(0.4))
+            .foregroundStyle(controller.podeVoltar ? ColmeiaCanvasTheme.ink : ColmeiaCanvasTheme.mutedInk.opacity(0.4))
             .disabled(!controller.podeVoltar)
 
             Button { controller.avancar() } label: {
@@ -85,7 +88,7 @@ struct PortalNodeView<Drag: Gesture>: View {
             }
             .buttonStyle(.plain)
             .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(controller.podeAvancar ? Color.primary : Color.secondary.opacity(0.4))
+            .foregroundStyle(controller.podeAvancar ? ColmeiaCanvasTheme.ink : ColmeiaCanvasTheme.mutedInk.opacity(0.4))
             .disabled(!controller.podeAvancar)
 
             Button { controller.recarregar() } label: {
@@ -93,29 +96,30 @@ struct PortalNodeView<Drag: Gesture>: View {
             }
             .buttonStyle(.plain)
             .font(.system(size: 10))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(ColmeiaCanvasTheme.mutedInk)
             .help(controller.carregando ? "Parar" : "Recarregar")
 
             TextField("https://…", text: $urlDigitada)
                 .textFieldStyle(.plain)
                 .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(ColmeiaCanvasTheme.ink)
                 .focused($urlFocada)
                 .onSubmit(navegarDigitada)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+                .background(ColmeiaCanvasTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
 
             Button { confirmandoDelete = true } label: {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.plain)
             .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(ColmeiaCanvasTheme.mutedInk)
             .help("Apagar portal")
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(.thinMaterial)
+        .background(ColmeiaCanvasTheme.surfaceRaised)
     }
 
     /// Título da página quando disponível (o controller já o persistiu via node.update).
@@ -125,16 +129,45 @@ struct PortalNodeView<Drag: Gesture>: View {
         return titulo
     }
 
+    private var portalTimelineEvents: [PortalActivityEvent] {
+        Array(store.portalActivities.filter { $0.nodeID == node.id }.suffix(4).reversed())
+    }
+
+    private var portalTimeline: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "waveform.path.ecg")
+                .foregroundStyle(ColmeiaCanvasTheme.mutedInk)
+            ForEach(portalTimelineEvents) { event in
+                HStack(spacing: 3) {
+                    Text(event.action.rawValue)
+                    Text(event.status == "succeeded" ? "✓" : "!")
+                            .foregroundStyle(event.status == "succeeded" ? Color.green : Color.red)
+                    if let duration = event.durationMs {
+                        Text("\(duration)ms")
+                            .foregroundStyle(ColmeiaCanvasTheme.mutedInk)
+                    }
+                }
+                .font(.system(size: 9, design: .monospaced))
+                .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(ColmeiaCanvasTheme.surfaceRaised)
+        .help("Ações CDP recentes deste portal")
+    }
+
     private func linhaTitulo(_ titulo: String) -> some View {
         Text(titulo)
             .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(ColmeiaCanvasTheme.mutedInk)
             .lineLimit(1)
             .truncationMode(.tail)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)
             .padding(.bottom, 3)
-            .background(.thinMaterial)
+            .background(ColmeiaCanvasTheme.surfaceRaised)
             .contentShape(Rectangle())
             .gesture(dragGesture)
     }

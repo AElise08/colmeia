@@ -106,8 +106,8 @@ struct AgentChatView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
-            if selectedAgentID == nil { selectedAgentID = agents.first?.id }
             restorePrimaryAgent()
+            if selectedAgentID == nil { selectedAgentID = primaryAgentID ?? agents.first?.id }
         }
         .onChange(of: agentIDs) { _, ids in
             guard let selectedAgentID else {
@@ -153,12 +153,12 @@ struct AgentChatView: View {
 
     private var agentsSection: some View {
         VStack(alignment: .leading, spacing: 7) {
-            sectionHeader("AGENTS", symbol: "person.2.fill") {
+            sectionHeader("AGENTES", symbol: "person.2.fill") {
                 store.presentNewTerminal(adapter: store.newTerminalAdapter)
             }
 
             if agents.isEmpty {
-                Text("No agents in this workspace yet.")
+                Text("Nenhum agente neste workspace ainda.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 5)
@@ -167,9 +167,9 @@ struct AgentChatView: View {
                     AgentListRow(
                         agent: agent,
                         selected: selectedAgentID == agent.id,
-                        primary: primaryAgentID == agent.id,
                         onSelect: { selectedAgentID = agent.id },
-                        onSetPrimary: { setPrimaryAgent(agent.id) })
+                        queen: agent.isQueen,
+                        onMakeQueen: { Task { await store.promoteToQueen(agent.id) } })
                 }
             }
         }
@@ -177,7 +177,7 @@ struct AgentChatView: View {
 
     private var projectsSection: some View {
         VStack(alignment: .leading, spacing: 7) {
-            sectionHeader("PROJECTS", symbol: "folder.fill") { surface = .canvas }
+            sectionHeader("WORKSPACES", symbol: "folder.fill") { surface = .canvas }
 
             projectRow("Main canvas", symbol: "square.3.layers.3d", selected: store.activeFloor == nil)
             ForEach(store.floors.filter { $0.estado == .ativo || $0.estado == .orfao }, id: \.id) { floor in
@@ -294,15 +294,21 @@ struct AgentChatView: View {
     private var conversationHeader: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Coordination room")
+                Text("Chat com agentes")
                     .font(.title3.weight(.semibold))
-                Text(selectedAgent.map { "Talking to \($0.name)" } ?? "Talk to your agents")
+                Text(selectedAgent.map { "Conversando com \($0.name)" } ?? "Escolha um agente para começar")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if let selectedAgent, selectedAgent.isQueen {
+                Label("Rainha", systemImage: "crown.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .help("A Rainha coordena os agentes e pode administrar conexões.")
+            }
             if let primaryAgent = agents.first(where: { $0.id == primaryAgentID }) {
-                Label("Primary · \(primaryAgent.name)", systemImage: "star.fill")
+                Label("Principal · \(primaryAgent.name)", systemImage: "star.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -317,7 +323,7 @@ struct AgentChatView: View {
             Button {
                 surface = .canvas
             } label: {
-                Label("Back to Canvas", systemImage: "arrow.uturn.backward")
+                Label("Voltar ao Canvas", systemImage: "arrow.uturn.backward")
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -331,15 +337,20 @@ struct AgentChatView: View {
             HStack(spacing: 8) {
                 Image(systemName: "sparkles")
                     .foregroundStyle(.tint)
-                Text("A more visual way to work with agents")
+                Text("Converse com seu agente")
                     .font(.headline)
             }
-            Text("Ask an agent to research, write, review, or prepare something for the canvas. Their live terminal activity stays connected to this conversation.")
+            Text("Envie uma instrução diretamente para o agente selecionado. A resposta e a atividade viva continuam ligadas ao mesmo workspace.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            if let selectedAgent, selectedAgent.isQueen {
+                Label("Rainha: agente coordenador. Pode conectar/desconectar nós e dispensar agentes pelo fluxo do workspace.", systemImage: "crown.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             HStack(spacing: 8) {
-                quickPrompt("Summarize the current project")
-                quickPrompt("What needs my attention?")
+                quickPrompt("Faça um resumo do projeto")
+                quickPrompt("O que você precisa de mim?")
             }
         }
         .padding(16)
@@ -378,7 +389,7 @@ struct AgentChatView: View {
             if !attachments.isEmpty { attachmentBar }
             HStack(alignment: .bottom, spacing: 10) {
                 Menu {
-                    Button("All active agents") { selectedAgentID = nil }
+                    Button("Todos os agentes ativos") { selectedAgentID = nil }
                     if !activeAgents.isEmpty { Divider() }
                     ForEach(activeAgents) { agent in
                         Button {
@@ -388,7 +399,7 @@ struct AgentChatView: View {
                         }
                     }
                 } label: {
-                    Label(selectedAgent?.name ?? "All active agents", systemImage: "at")
+                    Label(selectedAgent?.name ?? "Todos os agentes ativos", systemImage: "at")
                         .font(.caption.weight(.medium))
                         .lineLimit(1)
                 }
@@ -402,7 +413,7 @@ struct AgentChatView: View {
                 .controlSize(.small)
                 .help("Attach images, or drag images into this message")
 
-                TextField("Ask an agent…", text: $draft, axis: .vertical)
+                TextField("Escreva uma instrução para o agente…", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...5)
                     .focused($composerFocused)
@@ -426,7 +437,7 @@ struct AgentChatView: View {
         .background(.bar)
         .onDrop(of: [UTType.fileURL], isTargeted: $isDroppingAttachment, perform: acceptDrop)
         .overlay(alignment: .bottomLeading) {
-            Text("⌘V paste · ⌘C copy selected text · Return sends")
+            Text("⌘V cola · ⌘C copia · Return envia")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .padding(.leading, 145)
@@ -554,6 +565,7 @@ struct AgentChatView: View {
     private func restorePrimaryAgent() {
         if let id = store.workspace?.primaryNodeID, agents.contains(where: { $0.id == id }) {
             primaryAgentID = id
+            selectedAgentID = selectedAgentID ?? id
             return
         }
         primaryAgentID = agents.first(where: { agent in
@@ -561,13 +573,9 @@ struct AgentChatView: View {
             return role.contains("lead") || role.contains("rainha") || role.contains("queen")
         })?.id ?? agents.first?.id
         if let id = primaryAgentID {
+            selectedAgentID = selectedAgentID ?? id
             Task { await store.setPrimaryAgent(id) }
         }
-    }
-
-    private func setPrimaryAgent(_ id: ULID) {
-        primaryAgentID = id
-        Task { await store.setPrimaryAgent(id) }
     }
 
     @ViewBuilder
@@ -646,14 +654,19 @@ private struct AgentChatAgent: Identifiable {
     var currentModelLabel: String {
         model ?? (adapter == KnownAdapter.codex.rawValue ? "Codex default" : "Default")
     }
+
+    var isQueen: Bool {
+        let normalized = role?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return normalized == "rainha" || normalized == "queen"
+    }
 }
 
 private struct AgentListRow: View {
     let agent: AgentChatAgent
     let selected: Bool
-    let primary: Bool
     let onSelect: () -> Void
-    let onSetPrimary: () -> Void
+    let queen: Bool
+    let onMakeQueen: () -> Void
 
     var body: some View {
         HStack(spacing: 5) {
@@ -672,7 +685,7 @@ private struct AgentListRow: View {
                             .font(.caption.weight(.medium))
                             .lineLimit(1)
                         HStack(spacing: 3) {
-                            Text(agent.role ?? "Agent")
+                            Text(queen ? "Rainha" : (agent.role ?? "Agente"))
                             Text("·")
                             Text("\(agentModelLabel(agent.adapter)) · \(agent.currentModelLabel)")
                         }
@@ -687,13 +700,13 @@ private struct AgentListRow: View {
                 }
             }
             .buttonStyle(.plain)
-            Button(action: onSetPrimary) {
-                Image(systemName: primary ? "star.fill" : "star")
+            Button(action: onMakeQueen) {
+                Image(systemName: queen ? "crown.fill" : "crown")
                     .font(.caption)
-                    .foregroundStyle(primary ? Color.orange : Color.secondary)
+                    .foregroundStyle(queen ? Color.orange : Color.secondary)
             }
             .buttonStyle(.plain)
-            .help(primary ? "Primary agent" : "Set as primary agent")
+            .help(queen ? "Rainha do workspace" : "Tornar Rainha e agente principal")
         }
         .padding(7)
         .background(selected ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 9))

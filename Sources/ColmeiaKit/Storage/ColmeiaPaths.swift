@@ -40,6 +40,7 @@ public struct ColmeiaPaths: Sendable {
     /// Lock de instância única com pid via flock (§20.5).
     public var engineLock: URL { root.appendingPathComponent("engine.lock") }
     public var engineLog: URL { root.appendingPathComponent("engine.log") }
+    public var telemetryPricingFile: URL { root.appendingPathComponent("telemetry-pricing.json") }
     public var configFile: URL { root.appendingPathComponent("config.json") }
     /// Layout v2 mantém `config.json` para compatibilidade; novos engines podem
     /// optar pelo TOML sem fazer versões antigas perderem o arquivo conhecido.
@@ -179,6 +180,20 @@ public struct ColmeiaPaths: Sendable {
 
     public func semanticEventsFile(_ workspaceID: ULID) -> URL {
         workspaceDir(workspaceID).appendingPathComponent("semantic-events.jsonl")
+    }
+
+    /// Telemetria local append-only. Conteúdo de prompt/output não entra neste
+    /// arquivo; somente amostras e eventos normalizados.
+    public func telemetryFile(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("telemetry.jsonl")
+    }
+
+    public func telemetryBudgetFile(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("telemetry-budget.json")
+    }
+
+    public func deployFile(_ workspaceID: ULID) -> URL {
+        workspaceDir(workspaceID).appendingPathComponent("deploy.json")
     }
 
     // MARK: - Multiplayer

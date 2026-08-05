@@ -8,13 +8,31 @@ struct ConnectionsLayer: View {
     let isInteracting: Bool
 
     @EnvironmentObject private var store: AppStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ForEach(visibleConnections, id: \.id) { connection in
-                ConnectionLineView(connection: connection, isInteracting: isInteracting)
+            if !isInteracting && !reduceMotion && hasRecentActivity {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
+                    connectionLines(now: timeline.date)
+                }
+            } else {
+                connectionLines(now: nil)
             }
             pendingLine
+        }
+    }
+
+    @ViewBuilder
+    private func connectionLines(now: Date?) -> some View {
+        ForEach(visibleConnections, id: \.id) { connection in
+            ConnectionLineView(connection: connection, isInteracting: isInteracting, now: now)
+        }
+    }
+
+    private var hasRecentActivity: Bool {
+        store.connectionActivities.values.contains {
+            Date().timeIntervalSince($0.startedAt) < 1.5
         }
     }
 
@@ -69,9 +87,9 @@ private func worldRect(_ node: Node) -> CGRect {
 struct ConnectionLineView: View {
     let connection: Connection
     let isInteracting: Bool
+    let now: Date?
 
     @EnvironmentObject private var store: AppStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func tela(_ p: CGPoint) -> CGPoint {
         let convertido = CanvasMath.mundoParaTela(Ponto(x: p.x, y: p.y), viewport: store.viewport)
@@ -83,32 +101,37 @@ struct ConnectionLineView: View {
            store.nodeIsVisibleOnActiveFloor(connection.para),
            let de = store.nodes[connection.de],
            let para = store.nodes[connection.para] {
-            if CanvasPerformancePolicy.shouldAnimateConnections(interacting: isInteracting, reduceMotion: reduceMotion) {
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
-                    rope(de: de, para: para, time: timeline.date.timeIntervalSinceReferenceDate)
-                }
+            if let activity, let now, !isInteracting,
+               now.timeIntervalSince(activity.startedAt) < 1.5 {
+                let elapsed = max(0, now.timeIntervalSince(activity.startedAt))
+                let pulse = max(0, 1 - elapsed / 1.5)
+                rope(de: de, para: para, time: elapsed, pulse: pulse, activity: activity.activity)
             } else {
-                rope(de: de, para: para, time: 0)
+                rope(de: de, para: para, time: 0, pulse: 0, activity: nil)
             }
         }
     }
 
     @ViewBuilder
-    private func rope(de: Node, para: Node, time: TimeInterval) -> some View {
+    private func rope(
+        de: Node, para: Node, time: TimeInterval, pulse: Double,
+        activity: ConnectionActivityKind?
+    ) -> some View {
         let (a, b) = CanvasMath.ancorasDeConexao(de: worldRect(de), para: worldRect(para))
         let inicio = tela(a)
         let fim = tela(b)
         let selecionada = store.connectionSelection == connection.id
-        let geometria = linha(inicio, fim, time: time)
+        let geometria = linha(inicio, fim, time: time, pulse: pulse)
         let opacidade = min(store.floorOpacity(for: connection.de), store.floorOpacity(for: connection.para))
 
         geometria.path
             // Halo translúcido: dá a sensação de corda sobre o vidro sem tornar
             // as conexões pesadas no canvas com muitos nós.
-            .stroke(cor.opacity(selecionada ? 0.26 : 0.14), style: StrokeStyle(lineWidth: selecionada ? 8 : 6, lineCap: .round))
+            .stroke(pulseColor(activity).opacity(selecionada ? 0.30 : 0.14 + pulse * 0.20),
+                    style: StrokeStyle(lineWidth: selecionada ? 8 : 6 + pulse * 4, lineCap: .round))
             .overlay {
-                geometria.path.stroke(cor.opacity(selecionada ? 1 : 0.72), style: StrokeStyle(
-                    lineWidth: selecionada ? 3 : 2,
+                geometria.path.stroke(pulseColor(activity).opacity(selecionada ? 1 : 0.72 + pulse * 0.28), style: StrokeStyle(
+                    lineWidth: selecionada ? 3 : 2 + pulse * 1.5,
                     lineCap: .round,
                     dash: connection.estilo == .tracejada ? [6, 5] : []
                 ))
@@ -132,13 +155,15 @@ struct ConnectionLineView: View {
     /// Curva cúbica com uma oscilação pequena no eixo perpendicular. Nos nós
     /// próximos ela se aproxima de uma reta; nos distantes, ganha a folga de uma
     /// corda. O phase é estável por conexão, então as linhas não pulam ao render.
-    private func linha(_ inicio: CGPoint, _ fim: CGPoint, time: TimeInterval) -> (path: Path, controleFinal: CGPoint) {
+    private func linha(
+        _ inicio: CGPoint, _ fim: CGPoint, time: TimeInterval, pulse: Double
+    ) -> (path: Path, controleFinal: CGPoint) {
         let dx = fim.x - inicio.x
         let dy = fim.y - inicio.y
         let distance = max(1, hypot(dx, dy))
         let perpendicular = CGPoint(x: -dy / distance, y: dx / distance)
         let phase = Double(connection.id.string.unicodeScalars.reduce(0) { ($0 &* 33) &+ Int($1.value) } % 628) / 100
-        let amplitude = reduceMotion ? 0 : min(11, max(2, distance * 0.025)) * sin(time * 1.35 + phase)
+        let amplitude = min(11, max(2, distance * 0.025)) * pulse * sin(time * 8 + phase)
         let sag = min(22, distance * 0.07)
         let middle = CGPoint(x: (inicio.x + fim.x) / 2, y: (inicio.y + fim.y) / 2 + sag)
         let control1 = CGPoint(x: inicio.x + dx * 0.30 + perpendicular.x * amplitude, y: inicio.y + dy * 0.30 + perpendicular.y * amplitude + sag * 0.55)
@@ -171,9 +196,25 @@ struct ConnectionLineView: View {
 
     private var cor: Color {
         switch connection.semantica {
-        case .escritaDeNota: return .orange
-        case .conversa: return .blue
-        case .visual: return .secondary
+        case .escritaDeNota: return ColmeiaCanvasTheme.amber
+        case .conversa: return ColmeiaCanvasTheme.cyan
+        case .visual: return ColmeiaCanvasTheme.mutedInk
+        }
+    }
+
+    private var activity: ConnectionActivityEvent? {
+        store.connectionActivities[connection.id]
+    }
+
+    private func pulseColor(_ activity: ConnectionActivityKind?) -> Color {
+        switch activity {
+        case .message: return ColmeiaCanvasTheme.cyan
+        case .delegation: return ColmeiaCanvasTheme.violet
+        case .contextTransfer: return Color.teal
+        case .delivery: return Color.green
+        case .approval: return ColmeiaCanvasTheme.amber
+        case .error: return .red
+        case nil: return cor
         }
     }
 

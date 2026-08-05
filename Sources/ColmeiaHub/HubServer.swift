@@ -2147,6 +2147,25 @@ public final class HubClient {
                     let versionStr = hub?.version ?? "0.3.0"
                     let wantsHTML = text.contains("text/html")
 
+                    if text.hasPrefix("GET /assets/control-plane.js") {
+                        let asset = Bundle.module.url(
+                            forResource: "control-plane", withExtension: "js",
+                            subdirectory: nil).flatMap { try? Data(contentsOf: $0) } ?? Data()
+                        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/javascript; charset=utf-8\r\nContent-Length: \(asset.count)\r\nCache-Control: no-store\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
+                        var responseData = Data(response.utf8)
+                        responseData.append(asset)
+                        responseData.withUnsafeBytes { buffer in
+                            guard let ptr = buffer.baseAddress else { return }
+                            var written = 0
+                            while written < buffer.count {
+                                let n = write(fd, ptr.advanced(by: written), buffer.count - written)
+                                if n <= 0 { break }
+                                written += n
+                            }
+                        }
+                        break
+                    }
+
                     if wantsHTML || text.contains("/join/") {
                         let html = """
                         <!DOCTYPE html>
@@ -2155,6 +2174,7 @@ public final class HubClient {
                             <meta charset="UTF-8">
                             <meta name="viewport" content="width=device-width, initial-scale=1.0">
                              <title>Colmeia — Canvas de Agentes</title>
+                             <script src="/assets/control-plane.js"></script>
                              <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
                              <link href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" rel="stylesheet">
                              <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
@@ -3795,6 +3815,7 @@ public final class HubClient {
                                 }
 
                                 function handleEvent(ev) {
+                                    if (window.colmeiaControlPlane && window.colmeiaControlPlane.onEvent) window.colmeiaControlPlane.onEvent(ev);
                                     const topic = ev.topic;
                                      const p = ev.params || {};
                                      if (topic === 'session.output' && p.session_id && p.data_b64) {
@@ -4117,9 +4138,10 @@ public final class HubClient {
                                                 }
                                             }
 
-                                             setConnectionStatus('live');
-                                             setState('ready');
-                                             schedulePresence(true);
+                                            setConnectionStatus('live');
+                                            setState('ready');
+                                            if (window.colmeiaControlPlane) window.colmeiaControlPlane.start({ rpc, workspaceID: () => workspaceID });
+                                            schedulePresence(true);
                                         } catch (err) {
                                             setState('error', err.message);
                                         }

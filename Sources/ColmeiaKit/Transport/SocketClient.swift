@@ -46,6 +46,10 @@ public final class SocketClient: @unchecked Sendable {
     private var pending: [String: CheckedContinuation<ResponseMessage, Error>] = [:]
     private var requestCounter: UInt64 = 0
     private let readQueue = DispatchQueue(label: "colmeia.socket-client.read")
+    /// Decodificar um `session.attach` pode envolver dezenas de megabytes de JSON.
+    /// Isso não pode bloquear a fila que lê o socket: enquanto a resposta é
+    /// decodificada, eventos de PTY ainda precisam ser drenados do kernel.
+    private let decodeQueue = DispatchQueue(label: "colmeia.socket-client.decode")
 
     public let events: AsyncStream<EventMessage>
     private let eventContinuation: AsyncStream<EventMessage>.Continuation
@@ -394,6 +398,21 @@ public final class SocketClient: @unchecked Sendable {
 
     /// Linhas ilegíveis/kinds desconhecidos são ignorados (forward compatibility, §0).
     private func handle(line: Data) {
+        // `Envelope` escreve `kind` primeiro. Respostas podem conter um replay
+        // enorme e vão para a fila de decode; eventos pequenos continuam sendo
+        // decodificados nesta fila, preservando a ordem observável que o
+        // terminal usa para emendar replay e vivo.
+        let responseMarker = Data(#""kind":"response""#.utf8)
+        if line.range(of: responseMarker) != nil {
+            decodeQueue.async { [weak self] in
+                self?.decode(line: line)
+            }
+        } else {
+            decode(line: line)
+        }
+    }
+
+    private func decode(line: Data) {
         guard let envelope = try? SocketFraming.decodeLine(Envelope.self, from: line) else { return }
         switch envelope {
         case .response(let response):

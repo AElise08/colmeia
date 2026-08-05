@@ -15,6 +15,10 @@ public enum CanvasViewMode: String, Codable, CaseIterable, Sendable, Identifiabl
 
     public var id: String { rawValue }
 
+    /// Atenção deixou de ser uma superfície de navegação: pendências aparecem
+    /// no status global e no painel Agora, sem esconder o canvas.
+    public static let allCases: [CanvasViewMode] = [.livre, .missao, .equipe, .execucao]
+
     public var titulo: String {
         switch self {
         case .livre: return "Visão livre"

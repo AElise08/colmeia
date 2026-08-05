@@ -96,8 +96,8 @@ struct ProtocolTests {
 
     @Test func inventarioDeMetodos() {
         // 88 base multiplayer + 20 mission model + 2 persistent chat methods + health
-        // + 4 typed execution-job methods for restricted Workers.
-        #expect(ColmeiaMethod.allCases.count == 136)
+        // + 4 typed execution-job methods + 9 telemetry/file methods + 5 deploy methods.
+        #expect(ColmeiaMethod.allCases.count == 150)
         #expect(ColmeiaMethod(rawValue: "routine.run_now") == .routineRunNow)
         #expect(ColmeiaMethod(rawValue: "doc.apply") == .docApply)
         #expect(ColmeiaMethod(rawValue: "portal.open") == .portalOpen)
@@ -134,8 +134,9 @@ struct ProtocolTests {
     }
 
     @Test func topicos() {
-        // 19 base + 13 multiplayer + 2 event ack/reject + 3 mission deltas = 32
-        #expect(ColmeiaTopic.allCases.count == 33)
+        // 19 base + 13 multiplayer + 2 event ack/reject + 3 mission deltas
+        // + 7 control-plane activity topics = 40.
+        #expect(ColmeiaTopic.allCases.count == 41)
         #expect(ColmeiaTopic(rawValue: "session.output") == .sessionOutput)
         #expect(ColmeiaTopic(rawValue: "engine.warning") == .engineWarning)
         #expect(ColmeiaTopic(rawValue: "memory.changed") == .memoryChanged)

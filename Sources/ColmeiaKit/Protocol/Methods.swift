@@ -87,6 +87,21 @@ public enum ColmeiaMethod: String, Codable, CaseIterable, Sendable {
     case delegationList = "delegation.list"
     /// Inventário local dos motores e sua disponibilidade nesta máquina.
     case adapterList = "adapter.list"
+    // Control plane visual — telemetria local e sanitizável (§7).
+    case telemetrySnapshot = "telemetry.snapshot"
+    case telemetryQuery = "telemetry.query"
+    case telemetryBudgetGet = "telemetry.budget.get"
+    case telemetryBudgetUpdate = "telemetry.budget.update"
+    case telemetryPricingGet = "telemetry.pricing.get"
+    case fileActivityRecord = "file.activity.record"
+    case fileActivityScan = "file.activity.scan"
+    case fileActivityQuery = "file.activity.query"
+    case portalActivityQuery = "portal.activity.query"
+    case deployTargetRegister = "deploy.target.register"
+    case deployTargetList = "deploy.target.list"
+    case deployRequest = "deploy.request"
+    case deployConfirm = "deploy.confirm"
+    case deployList = "deploy.list"
     case subscribe
     case unsubscribe
     // Multiplayer — room.* (§6.1)
