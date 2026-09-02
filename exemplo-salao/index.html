@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ateliê Figueira · exemplo</title>
+  <meta name="description" content="Cabelo, unhas e um horário que cabe na semana. Um botão. Você chama no WhatsApp. Página de exemplo — não é um salão real." />
+  <meta name="author" content="Mel" />
+  <meta name="theme-color" content="#f6efe4" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta property="og:type" content="website" />
+  <meta property="og:locale" content="pt_BR" />
+  <meta property="og:title" content="Ateliê Figueira · exemplo" />
+  <meta property="og:description" content="Cabelo, unhas e um horário que cabe na semana. Página de exemplo — não é um salão real." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Ateliê Figueira · exemplo" />
+  <meta name="twitter:description" content="Cabelo, unhas e um horário que cabe na semana. Página de exemplo — não é um salão real." />
+  <style>
+    :root {
+      --cream: #f6efe4;
+      --ink: #1c2a22;
+      --green: #2d4a3a;
+      --terra: #c45c3e;
+      --whatsapp: #1fa855;
+      --paper: #fffdf8;
+      --serif: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+      --sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      background: var(--cream);
+      color: var(--ink);
+    }
+
+    body {
+      font: 16px/1.55 var(--sans);
+      min-height: 100dvh;
+    }
+
+    .banner {
+      background: var(--terra);
+      color: var(--paper);
+      text-align: center;
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      padding: 10px 16px;
+    }
+
+    .page {
+      width: min(440px, 100%);
+      margin: 0 auto;
+      padding: 20px 18px 40px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      border-radius: 28px;
+      padding: 36px 24px 28px;
+      color: var(--paper);
+      background:
+        radial-gradient(120% 90% at 100% 0%, rgba(196, 92, 62, 0.42) 0%, transparent 52%),
+        linear-gradient(165deg, #3a5d4b 0%, var(--green) 48%, #1c2a22 100%);
+    }
+
+    .hero-fig {
+      position: absolute;
+      right: -18px;
+      bottom: -28px;
+      width: 168px;
+      height: 168px;
+      opacity: 0.16;
+      pointer-events: none;
+    }
+
+    .place {
+      margin: 0 0 18px;
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: rgba(255, 253, 248, 0.78);
+    }
+
+    h1 {
+      margin: 0;
+      font: 400 46px/0.95 var(--serif);
+      letter-spacing: -0.03em;
+    }
+
+    .lead {
+      margin: 16px 0 26px;
+      max-width: 22em;
+      font-size: 16px;
+      line-height: 1.5;
+      color: rgba(255, 253, 248, 0.9);
+    }
+
+    .cta {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 54px;
+      padding: 14px 20px;
+      border-radius: 999px;
+      background: var(--whatsapp);
+      color: #fff;
+      font: 700 16px/1 var(--sans);
+      text-decoration: none;
+      box-shadow: 0 10px 22px rgba(31, 168, 85, 0.28);
+    }
+
+    .cta:hover,
+    .cta:focus-visible {
+      filter: brightness(1.06);
+    }
+
+    .cta svg {
+      width: 22px;
+      height: 22px;
+      flex: none;
+    }
+
+    .services {
+      margin-top: 36px;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font: 400 26px/1.15 var(--serif);
+    }
+
+    .cards {
+      display: grid;
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--paper);
+      border-radius: 22px;
+      padding: 18px 18px 16px;
+      box-shadow: 0 8px 24px rgba(28, 42, 34, 0.05);
+      border: 1px solid rgba(45, 74, 58, 0.08);
+    }
+
+    .card h3 {
+      margin: 0 0 6px;
+      color: var(--terra);
+      font: 400 22px/1.1 var(--serif);
+    }
+
+    .card p {
+      margin: 0;
+      color: #3d4c44;
+      font-size: 15px;
+    }
+
+    .meta {
+      margin-top: 28px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .meta p {
+      margin: 0;
+      padding: 14px 16px;
+      background: var(--paper);
+      border-radius: 18px;
+      font-size: 15px;
+    }
+
+    .meta span {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--green);
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    footer {
+      margin-top: 28px;
+      text-align: center;
+      color: #6a746e;
+      font-size: 13px;
+    }
+
+    @media (min-width: 720px) {
+      .page {
+        width: min(520px, 100%);
+        padding-top: 28px;
+      }
+
+      h1 { font-size: 54px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="banner">página de exemplo · não é um salão real</div>
+  <div class="page">
+    <section class="hero">
+      <svg class="hero-fig" viewBox="0 0 160 160" aria-hidden="true">
+        <path fill="#fffdf8" d="M82 18c18 14 44 22 56 44-8 26-32 38-54 48 4-16 2-32-8-46-8 16-24 28-40 32 10-22 14-48 28-66 6 12 12 18 18-12zM48 108c18-2 34 10 40 26-18 10-40 8-58-6 8-8 12-16 18-20z"/>
+      </svg>
+      <p class="place">Cuiabá · Araés</p>
+      <h1>Ateliê Figueira</h1>
+      <p class="lead">Cabelo, unhas e um horário que cabe na semana. Um botão. Você chama no WhatsApp.</p>
+      <a class="cta" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d="M12.04 2C6.5 2 2 6.42 2 11.88c0 1.75.46 3.45 1.34 4.95L2 22l5.3-1.38a10.1 10.1 0 0 0 4.74 1.2h.01c5.54 0 10.04-4.42 10.04-9.88C22.09 6.42 17.58 2 12.04 2zm5.84 14.11c-.25.7-1.45 1.29-2.02 1.37-.52.07-1.18.13-1.9-.12-.44-.15-1-.32-1.72-.63-3.03-1.31-5-4.37-5.15-4.57-.15-.2-1.25-1.66-1.25-3.17 0-1.5.79-2.24 1.07-2.55.28-.3.61-.38.81-.38h.58c.18 0 .43-.07.67.51.25.6.85 2.08.92 2.23.08.15.12.33.02.53-.1.2-.15.33-.3.5-.15.18-.31.4-.44.53-.15.15-.3.31-.13.6.17.3.76 1.25 1.63 2.03 1.12 1 2.07 1.32 2.36 1.47.3.15.46.13.63-.08.17-.2.73-.85.93-1.14.2-.3.4-.24.67-.15.28.1 1.76.83 2.06.98.3.15.5.23.57.35.08.13.08.75-.17 1.45z"/>
+        </svg>
+        Agendar no WhatsApp
+      </a>
+    </section>
+
+    <section class="services">
+      <h2>O que a gente faz</h2>
+      <div class="cards">
+        <article class="card">
+          <h3>Corte</h3>
+          <p>Do alinhado ao ousado. A conversa vem antes da tesoura.</p>
+        </article>
+        <article class="card">
+          <h3>Cor</h3>
+          <p>Mechas, morena iluminada, correção. Sem surpresa ruim no espelho.</p>
+        </article>
+        <article class="card">
+          <h3>Unhas</h3>
+          <p>Esmaltação e alongamento. Horário combinado, sem fila no Zap.</p>
+        </article>
+      </div>
+    </section>
+
+    <div class="meta">
+      <p><span>Horário</span>Terça a sábado · 9h às 19h</p>
+      <p><span>Endereço</span>Rua das Figueiras, 120 · Araés, Cuiabá-MT</p>
+      <p><span>Instagram</span>@ateliefigueira</p>
+    </div>
+
+    <footer>página de exemplo · feita por Mel</footer>
+  </div>
+</body>
+</html>
