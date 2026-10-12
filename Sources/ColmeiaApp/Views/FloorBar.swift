@@ -31,7 +31,7 @@ struct FloorBar: View {
                 }
                 Divider()
                 Button("Novo andar…") {
-                    nomeNovo = ""
+                    nomeNovo = "andar-\(store.floors.count + 1)"
                     branchNova = ""
                     erroCriacao = nil
                     criando = true
@@ -69,6 +69,7 @@ struct FloorBar: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(store.activeFloor == nil ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(Color.purple.opacity(0.25)))
+        .animation(.easeInOut(duration: 0.25), value: store.activeFloor?.id)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(store.activeFloor.map { "Andar ativo \($0.nome)" } ?? "Andar térreo")
         .sheet(isPresented: $criando) { formNovoAndar }

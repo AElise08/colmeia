@@ -21,6 +21,7 @@ struct ConnectionsLayer: View {
             }
             pendingLine
         }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: store.connections.count)
     }
 
     @ViewBuilder
@@ -56,20 +57,45 @@ struct ConnectionsLayer: View {
         }
     }
 
+    /// Cabo em construção: curva como as conexões reais, encaixa no nó sob o
+    /// cursor (borda + halo) e muda para linha cheia quando o alvo é válido.
     @ViewBuilder
     private var pendingLine: some View {
         if let pendente = store.conexaoPendente, let origem = store.nodes[pendente.de] {
             let rect = worldRect(origem)
-            let alvo = CGPoint(x: pendente.ateMundo.x, y: pendente.ateMundo.y)
-            let de = CanvasMath.pontoDeBorda(rect: rect, em: alvo)
-            Path { path in
-                path.move(to: tela(de))
-                path.addLine(to: tela(alvo))
+            let cursor = CGPoint(x: pendente.ateMundo.x, y: pendente.ateMundo.y)
+            let alvoNode = store.node(atWorldPoint: Ponto(x: cursor.x, y: cursor.y), excluindo: pendente.de)
+                .flatMap { store.nodes[$0] }
+            let destinoMundo = alvoNode.map { CanvasMath.pontoDeBorda(rect: worldRect($0), em: CGPoint(x: rect.midX, y: rect.midY)) } ?? cursor
+            let de = tela(CanvasMath.pontoDeBorda(rect: rect, em: destinoMundo))
+            let ate = tela(destinoMundo)
+            let dx = ate.x - de.x
+            let dy = ate.y - de.y
+            let sag = min(22, hypot(dx, dy) * 0.07)
+            let valido = alvoNode != nil
+            ZStack(alignment: .topLeading) {
+                if let alvoNode {
+                    let r = worldRect(alvoNode)
+                    let topo = tela(CGPoint(x: r.minX, y: r.minY))
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(ColmeiaCanvasTheme.cyan.opacity(0.9), lineWidth: 2)
+                        .shadow(color: ColmeiaCanvasTheme.cyan.opacity(0.6), radius: 10)
+                        .frame(width: r.width * store.viewport.zoom, height: r.height * store.viewport.zoom)
+                        .offset(x: topo.x, y: topo.y)
+                }
+                Path { path in
+                    path.move(to: de)
+                    path.addCurve(
+                        to: ate,
+                        control1: CGPoint(x: de.x + dx * 0.30, y: de.y + dy * 0.30 + sag * 0.55),
+                        control2: CGPoint(x: ate.x - dx * 0.30, y: ate.y - dy * 0.30 + sag * 0.55))
+                }
+                .stroke(
+                    (valido ? ColmeiaCanvasTheme.cyan : Color.accentColor).opacity(valido ? 1 : 0.7),
+                    style: StrokeStyle(lineWidth: valido ? 3 : 2, lineCap: .round, dash: valido ? [] : [5, 4])
+                )
             }
-            .stroke(
-                Color.accentColor.opacity(0.7),
-                style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [5, 4])
-            )
+            .animation(.easeOut(duration: 0.12), value: valido)
             .allowsHitTesting(false)
         }
     }
@@ -149,6 +175,7 @@ struct ConnectionLineView: View {
                 }
             }
             .opacity(opacidade)
+            .transition(.opacity)
             .allowsHitTesting(opacidade >= 0.99)
     }
 
