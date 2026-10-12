@@ -906,7 +906,7 @@ private final class TmuxPrefixMonitorView: NSView {
         viewport.zoom = zoom
         viewport.x = node.posicao.x + node.tamanho.w / 2 - Double(store.canvasSize.width) / (2 * zoom)
         viewport.y = node.posicao.y + node.tamanho.h / 2 - Double(store.canvasSize.height) / (2 * zoom)
-        store.setViewport(viewport)
+        store.animateViewport(to: viewport)
     }
 
     private func center(of node: Node) -> Ponto {

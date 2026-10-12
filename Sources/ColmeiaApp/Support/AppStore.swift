@@ -71,6 +71,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var portalActivities: [PortalActivityEvent] = []
     @Published private(set) var workspaceHealth: WorkspaceHealth?
     @Published var viewport = Viewport()
+    private var viewportAnimation: Task<Void, Never>?
     @Published var selection: ULID?
     @Published var connectionSelection: ULID?
     /// Origem da conexão iniciada pela UI. O modo explícito por seleção/clique
@@ -1964,10 +1965,45 @@ final class AppStore: ObservableObject {
     // MARK: - Viewport (fora do undo, throttled §7.2)
 
     func setViewport(_ novo: Viewport) {
+        viewportAnimation?.cancel()
+        viewportAnimation = nil
         var clamped = novo
         clamped.zoom = min(max(novo.zoom, Viewport.zoomRange.lowerBound), Viewport.zoomRange.upperBound)
         viewport = clamped
         scheduleViewportPersist()
+    }
+
+    /// Câmera com ease-out (~0,32 s) em vez de salto. Qualquer gesto do usuário
+    /// (pan/zoom) cancela a animação em curso para não brigar com a mão.
+    func animateViewport(to alvo: Viewport, duration: TimeInterval = 0.32) {
+        viewportAnimation?.cancel()
+        var destino = alvo
+        destino.zoom = min(max(alvo.zoom, Viewport.zoomRange.lowerBound), Viewport.zoomRange.upperBound)
+        let origem = viewport
+        let reduzir = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard !reduzir, duration > 0, origem != destino else {
+            setViewport(destino)
+            return
+        }
+        viewportAnimation = Task { [weak self] in
+            let inicio = Date()
+            while !Task.isCancelled {
+                guard let self else { return }
+                let t = min(1, Date().timeIntervalSince(inicio) / duration)
+                let e = 1 - pow(1 - t, 3)
+                var v = origem
+                v.x = origem.x + (destino.x - origem.x) * e
+                v.y = origem.y + (destino.y - origem.y) * e
+                // zoom interpolado em escala logarítmica: velocidade percebida constante
+                v.zoom = origem.zoom * pow(destino.zoom / origem.zoom, e)
+                self.viewport = v
+                if t >= 1 { break }
+                try? await Task.sleep(nanoseconds: 8_000_000)
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.setViewport(destino)
+            self.viewportAnimation = nil
+        }
     }
 
     /// Pan por delta de TELA (scroll/drag) — dividir pelo zoom converte para mundo.
@@ -2034,7 +2070,7 @@ final class AppStore: ObservableObject {
         var v = viewport
         v.x = node.posicao.x + node.tamanho.w / 2 - Double(canvasSize.width) / (2 * v.zoom)
         v.y = node.posicao.y + node.tamanho.h / 2 - Double(canvasSize.height) / (2 * v.zoom)
-        setViewport(v)
+        animateViewport(to: v)
     }
 
     func focus(sessionID: ULID) {
